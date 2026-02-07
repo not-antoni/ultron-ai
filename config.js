@@ -14,7 +14,7 @@ module.exports = {
         models: [
             'moonshotai/kimi-k2-instruct',  // Best quality, separate rate limit
             'llama-3.3-70b-versatile',      // Fallback, separate rate limit
-            'llama3-70b-8192'               // Second fallback, separate rate limit
+            'meta-llama/llama-4-scout-17b-16e-instruct' // Second fallback, supports vision
         ]
     },
     server: {

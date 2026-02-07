@@ -750,7 +750,12 @@ async function executeTool(name, args, message) {
     const tierCheck = checkTier(name, message);
     if (!tierCheck.allowed) return { error: tierCheck.error };
 
-    return fn(args || {}, message);
+    try {
+        return await fn(args || {}, message);
+    } catch (err) {
+        console.error(`[Ultron] Tool ${name} error:`, err.message);
+        return { error: `Action failed: ${err.message}` };
+    }
 }
 
 module.exports = { executeTool, getUserTier, getTierName, TOOL_TIERS };
