@@ -1,4 +1,4 @@
-const { ChannelType, PermissionsBitField, GuildVerificationLevel, AutoModerationRuleTriggerType, AutoModerationActionType, AutoModerationRuleEventType, GuildScheduledEventPrivacyLevel, GuildScheduledEventEntityType } = require('discord.js');
+const { ChannelType, PermissionsBitField, GuildVerificationLevel, AutoModerationRuleTriggerType, AutoModerationActionType, AutoModerationRuleEventType, GuildScheduledEventPrivacyLevel, GuildScheduledEventEntityType, EmbedBuilder, GuildDefaultMessageNotifications, PollLayoutType } = require('discord.js');
 const store = require('./store');
 
 // ── Resolvers ──
@@ -58,6 +58,8 @@ const TOOL_TIERS = {
     listInvites: 1, listDocuments: 1, getDocument: 1, getMemory: 1,
     listMemories: 1, listAutomodRules: 1, getAuditLog: 1, listWebhooks: 1,
     listScheduledEvents: 1, listChannelPermissions: 1,
+    readMessages: 1, fetchMessage: 1, listEmojis: 1, listReactionRoles: 1,
+    listBans: 1,
 
     // Tier 2 — Moderator (constructive / moderate actions)
     createChannel: 2, renameChannel: 2, setChannelTopic: 2,
@@ -65,7 +67,9 @@ const TOOL_TIERS = {
     addEmoji: 2, removeEmoji: 2,
     createRole: 2, assignRole: 2, removeRole: 2, editRole: 2,
     timeoutMember: 2, untimeoutMember: 2, setNickname: 2, setSlowmode: 2,
-    sendMessage: 2,
+    sendMessage: 2, sendEmbed: 2, replyToMessage: 2, editMessage: 2,
+    addReaction: 2, createPoll: 2, dmUser: 2,
+    moveChannel: 2, cloneChannel: 2, setChannelNSFW: 2, setVoiceUserLimit: 2,
     lockChannel: 2, unlockChannel: 2,
     pinMessage: 2, unpinMessage: 2,
     setChannelPermission: 2, removeChannelPermission: 2,
@@ -73,13 +77,16 @@ const TOOL_TIERS = {
     createScheduledEvent: 2, editScheduledEvent: 2, deleteScheduledEvent: 2,
     createDocument: 2, editDocument: 2, saveMemory: 2, deleteMemory: 2,
     setSystemChannel: 2, setRulesChannel: 2,
+    setupReactionRole: 2, removeReactionRole: 2,
+    setWelcomeChannel: 2, setGoodbyeChannel: 2, setAutoRole: 2,
 
     // Tier 3 — Admin (destructive / dangerous)
     kickMember: 3, banMember: 3, unbanMember: 3,
     deleteChannel: 3, deleteRole: 3, purgeMessages: 3,
     updateServerName: 3, updateServerIcon: 3, setVerificationLevel: 3,
     deleteInvite: 3, createAutomodRule: 3, deleteAutomodRule: 3,
-    deleteWebhook: 3, deleteDocument: 3
+    deleteWebhook: 3, deleteDocument: 3,
+    setAFKChannel: 3, setDefaultNotifications: 3, setServerBanner: 3
 };
 
 function getUserTier(member, guildId) {
@@ -132,7 +139,7 @@ const tools = {
 
     async createChannel(args, message) {
         const guild = message.guild;
-        const typeMap = { text: ChannelType.GuildText, voice: ChannelType.GuildVoice, category: ChannelType.GuildCategory, forum: ChannelType.GuildForum };
+        const typeMap = { text: ChannelType.GuildText, voice: ChannelType.GuildVoice, category: ChannelType.GuildCategory, forum: ChannelType.GuildForum, announcement: ChannelType.GuildAnnouncement };
         const channelType = typeMap[args.type] ?? ChannelType.GuildText;
         const options = { name: args.name, type: channelType };
         if (args.topic && channelType === ChannelType.GuildText) options.topic = args.topic;
@@ -366,7 +373,7 @@ const tools = {
         const channel = resolveChannel(message.guild, args.channel);
         if (!channel) return { error: `Channel "${args.channel}" not found.` };
         if (!channel.isTextBased()) return { error: `Channel "${channel.name}" is not a text channel.` };
-        await channel.send({ content: args.content, allowedMentions: { parse: [] } });
+        await channel.send({ content: args.content, allowedMentions: { parse: ['users', 'roles'] } });
         return { success: true, channel: channel.name, sent: true };
     },
 
@@ -699,12 +706,302 @@ const tools = {
         return { success: true, deleted: args.key };
     },
 
+    // ── Message Reading ──
+
+    async readMessages(args, message) {
+        const channel = args.channel ? resolveChannel(message.guild, args.channel) : message.channel;
+        if (!channel) return { error: `Channel "${args.channel}" not found.` };
+        if (!channel.isTextBased()) return { error: `Channel "${channel.name}" is not a text channel.` };
+        const count = Math.min(Math.max(parseInt(args.count, 10) || 10, 1), 25);
+        const messages = await channel.messages.fetch({ limit: count });
+        return {
+            channel: channel.name,
+            messages: messages.reverse().map(m => ({
+                id: m.id, author: m.author.username, content: m.content?.slice(0, 200),
+                timestamp: m.createdAt.toISOString(), attachments: m.attachments.size
+            }))
+        };
+    },
+
+    async fetchMessage(args, message) {
+        const channel = args.channel ? resolveChannel(message.guild, args.channel) : message.channel;
+        if (!channel) return { error: `Channel "${args.channel}" not found.` };
+        const msg = await channel.messages.fetch(args.messageId).catch(() => null);
+        if (!msg) return { error: 'Message not found.' };
+        return {
+            id: msg.id, author: msg.author.username, content: msg.content,
+            timestamp: msg.createdAt.toISOString(), attachments: msg.attachments.map(a => a.url),
+            embeds: msg.embeds.length, reactions: msg.reactions.cache.map(r => `${r.emoji.name}(${r.count})`)
+        };
+    },
+
+    // ── Rich Messages ──
+
+    async sendEmbed(args, message) {
+        const channel = resolveChannel(message.guild, args.channel);
+        if (!channel) return { error: `Channel "${args.channel}" not found.` };
+        if (!channel.isTextBased()) return { error: `Channel "${channel.name}" is not a text channel.` };
+        const embed = new EmbedBuilder();
+        if (args.title) embed.setTitle(args.title);
+        if (args.description) embed.setDescription(args.description);
+        if (args.color) embed.setColor(args.color);
+        if (args.footer) embed.setFooter({ text: args.footer });
+        if (args.image) embed.setImage(args.image);
+        if (args.thumbnail) embed.setThumbnail(args.thumbnail);
+        if (args.fields) {
+            try {
+                const fields = JSON.parse(args.fields);
+                if (Array.isArray(fields)) {
+                    for (const f of fields) embed.addFields({ name: f.name, value: f.value, inline: !!f.inline });
+                }
+            } catch (_) {}
+        }
+        await channel.send({ embeds: [embed] });
+        return { success: true, channel: channel.name };
+    },
+
+    async replyToMessage(args, message) {
+        const channel = resolveChannel(message.guild, args.channel);
+        if (!channel) return { error: `Channel "${args.channel}" not found.` };
+        const msg = await channel.messages.fetch(args.messageId).catch(() => null);
+        if (!msg) return { error: 'Message not found.' };
+        await msg.reply({ content: args.content, allowedMentions: { parse: ['users', 'roles'] } });
+        return { success: true, repliedTo: msg.author.username };
+    },
+
+    async editMessage(args, message) {
+        const channel = resolveChannel(message.guild, args.channel);
+        if (!channel) return { error: `Channel "${args.channel}" not found.` };
+        const msg = await channel.messages.fetch(args.messageId).catch(() => null);
+        if (!msg) return { error: 'Message not found.' };
+        if (msg.author.id !== message.guild.members.me.id) return { error: 'Can only edit messages sent by me.' };
+        await msg.edit(args.content);
+        return { success: true, edited: args.messageId };
+    },
+
+    async addReaction(args, message) {
+        const channel = args.channel ? resolveChannel(message.guild, args.channel) : message.channel;
+        if (!channel) return { error: `Channel "${args.channel}" not found.` };
+        const msg = await channel.messages.fetch(args.messageId).catch(() => null);
+        if (!msg) return { error: 'Message not found.' };
+        const customEmoji = message.guild.emojis.cache.find(e => e.name.toLowerCase() === args.emoji.toLowerCase());
+        await msg.react(customEmoji || args.emoji);
+        return { success: true, emoji: args.emoji, messageId: args.messageId };
+    },
+
+    async createPoll(args, message) {
+        const channel = args.channel ? resolveChannel(message.guild, args.channel) : message.channel;
+        if (!channel) return { error: `Channel "${args.channel}" not found.` };
+        const options = args.options.split(',').map(o => o.trim()).filter(Boolean).slice(0, 10);
+        if (options.length < 2) return { error: 'Need at least 2 options.' };
+        const duration = Math.min(Math.max(parseInt(args.duration, 10) || 24, 1), 168);
+        await channel.send({
+            poll: {
+                question: { text: args.question },
+                answers: options.map(text => ({ text })),
+                duration,
+                allowMultiselect: false,
+                layoutType: PollLayoutType.Default
+            }
+        });
+        return { success: true, question: args.question, options, duration: `${duration}h` };
+    },
+
+    // ── Direct Messages ──
+
+    async dmUser(args, message) {
+        const member = await resolveMember(message.guild, args.user);
+        if (!member) return { error: `Member "${args.user}" not found.` };
+        try {
+            await member.send(args.content);
+            return { success: true, user: member.displayName };
+        } catch (_) {
+            return { error: `Cannot DM ${member.displayName}. They may have DMs disabled.` };
+        }
+    },
+
+    // ── Additional Channel Management ──
+
+    async moveChannel(args, message) {
+        const channel = resolveChannel(message.guild, args.channel);
+        if (!channel) return { error: `Channel "${args.channel}" not found.` };
+        const category = resolveChannel(message.guild, args.category);
+        if (!category || category.type !== ChannelType.GuildCategory) return { error: `Category "${args.category}" not found.` };
+        await channel.setParent(category.id);
+        return { success: true, channel: channel.name, category: category.name };
+    },
+
+    async cloneChannel(args, message) {
+        const channel = resolveChannel(message.guild, args.channel);
+        if (!channel) return { error: `Channel "${args.channel}" not found.` };
+        const cloned = await channel.clone({ name: args.newName || undefined });
+        return { success: true, original: channel.name, cloned: cloned.name, id: cloned.id };
+    },
+
+    async setChannelNSFW(args, message) {
+        const channel = resolveChannel(message.guild, args.channel);
+        if (!channel) return { error: `Channel "${args.channel}" not found.` };
+        await channel.setNSFW(!!args.nsfw);
+        return { success: true, channel: channel.name, nsfw: !!args.nsfw };
+    },
+
+    async setVoiceUserLimit(args, message) {
+        const channel = resolveChannel(message.guild, args.channel);
+        if (!channel) return { error: `Channel "${args.channel}" not found.` };
+        if (!channel.isVoiceBased()) return { error: `"${channel.name}" is not a voice channel.` };
+        const limit = Math.max(parseInt(args.limit, 10) || 0, 0);
+        await channel.setUserLimit(limit);
+        return { success: true, channel: channel.name, userLimit: limit || 'unlimited' };
+    },
+
+    // ── Additional Info Queries ──
+
+    async listEmojis(_args, message) {
+        const emojis = message.guild.emojis.cache.map(e => ({
+            name: e.name, id: e.id, animated: e.animated, available: e.available
+        }));
+        return { count: emojis.length, emojis };
+    },
+
+    async listBans(_args, message) {
+        const bans = await message.guild.bans.fetch();
+        return { count: bans.size, bans: bans.map(b => ({ user: b.user.username, id: b.user.id, reason: b.reason })) };
+    },
+
+    // ── Reaction Roles ──
+
+    async setupReactionRole(args, message) {
+        const channel = resolveChannel(message.guild, args.channel);
+        if (!channel) return { error: `Channel "${args.channel}" not found.` };
+        const role = resolveRole(message.guild, args.role);
+        if (!role) return { error: `Role "${args.role}" not found.` };
+        const msg = await channel.messages.fetch(args.messageId).catch(() => null);
+        if (!msg) return { error: 'Message not found.' };
+        const customEmoji = message.guild.emojis.cache.find(e => e.name.toLowerCase() === args.emoji.toLowerCase());
+        await msg.react(customEmoji || args.emoji);
+        const guildId = message.guild.id;
+        store.update(`guild-${guildId}.json`, cfg => {
+            const config = cfg || {};
+            if (!Array.isArray(config.reactionRoles)) config.reactionRoles = [];
+            config.reactionRoles = config.reactionRoles.filter(r => !(r.messageId === args.messageId && r.emoji === args.emoji));
+            config.reactionRoles.push({ messageId: args.messageId, channelId: channel.id, emoji: args.emoji, roleId: role.id });
+            return config;
+        });
+        return { success: true, message: args.messageId, emoji: args.emoji, role: role.name };
+    },
+
+    async removeReactionRole(args, message) {
+        const guildId = message.guild.id;
+        store.update(`guild-${guildId}.json`, cfg => {
+            const config = cfg || {};
+            if (!Array.isArray(config.reactionRoles)) return config;
+            const before = config.reactionRoles.length;
+            config.reactionRoles = config.reactionRoles.filter(r => {
+                if (r.messageId !== args.messageId) return true;
+                if (args.emoji && r.emoji !== args.emoji) return true;
+                return false;
+            });
+            return config;
+        });
+        return { success: true, removed: args.messageId };
+    },
+
+    async listReactionRoles(_args, message) {
+        const guildId = message.guild.id;
+        const config = store.read(`guild-${guildId}.json`, {});
+        const rrs = config.reactionRoles || [];
+        return {
+            count: rrs.length,
+            reactionRoles: rrs.map(r => ({
+                messageId: r.messageId, emoji: r.emoji,
+                role: message.guild.roles.cache.get(r.roleId)?.name || r.roleId,
+                channel: message.guild.channels.cache.get(r.channelId)?.name || r.channelId
+            }))
+        };
+    },
+
+    // ── Welcome/Goodbye/AutoRole Config ──
+
+    async setWelcomeChannel(args, message) {
+        const channel = resolveChannel(message.guild, args.channel);
+        if (!channel) return { error: `Channel "${args.channel}" not found.` };
+        const guildId = message.guild.id;
+        store.update(`guild-${guildId}.json`, cfg => {
+            const config = cfg || {};
+            config.welcomeChannel = channel.id;
+            if (args.message) config.welcomeMessage = args.message;
+            return config;
+        });
+        return { success: true, channel: channel.name, message: args.message || '(default)' };
+    },
+
+    async setGoodbyeChannel(args, message) {
+        const channel = resolveChannel(message.guild, args.channel);
+        if (!channel) return { error: `Channel "${args.channel}" not found.` };
+        const guildId = message.guild.id;
+        store.update(`guild-${guildId}.json`, cfg => {
+            const config = cfg || {};
+            config.goodbyeChannel = channel.id;
+            if (args.message) config.goodbyeMessage = args.message;
+            return config;
+        });
+        return { success: true, channel: channel.name, message: args.message || '(default)' };
+    },
+
+    async setAutoRole(args, message) {
+        const role = resolveRole(message.guild, args.role);
+        if (!role) return { error: `Role "${args.role}" not found.` };
+        const guildId = message.guild.id;
+        store.update(`guild-${guildId}.json`, cfg => {
+            const config = cfg || {};
+            if (!Array.isArray(config.autoRoles)) config.autoRoles = [];
+            if (args.action === 'add') {
+                if (!config.autoRoles.includes(role.id)) config.autoRoles.push(role.id);
+            } else {
+                config.autoRoles = config.autoRoles.filter(id => id !== role.id);
+            }
+            return config;
+        });
+        return { success: true, role: role.name, action: args.action };
+    },
+
+    // ── Server Settings (extended) ──
+
+    async setAFKChannel(args, message) {
+        const channel = resolveChannel(message.guild, args.channel);
+        if (!channel) return { error: `Channel "${args.channel}" not found.` };
+        if (!channel.isVoiceBased()) return { error: `"${channel.name}" is not a voice channel.` };
+        await message.guild.setAFKChannel(channel);
+        if (args.timeout) {
+            const valid = [60, 300, 900, 1800, 3600];
+            const timeout = valid.includes(args.timeout) ? args.timeout : 300;
+            await message.guild.setAFKTimeout(timeout);
+        }
+        return { success: true, channel: channel.name, timeout: args.timeout || 'unchanged' };
+    },
+
+    async setDefaultNotifications(args, message) {
+        const level = args.level === 'all' ? GuildDefaultMessageNotifications.AllMessages : GuildDefaultMessageNotifications.OnlyMentions;
+        await message.guild.setDefaultMessageNotifications(level);
+        return { success: true, level: args.level };
+    },
+
+    async setServerBanner(args, message) {
+        if (message.guild.premiumTier < 2) return { error: 'Server banner requires boost level 2+.' };
+        await message.guild.setBanner(args.url);
+        return { success: true, banner: 'updated' };
+    },
+
     // ── Info Queries ──
 
     async getServerInfo(_args, message) {
         const guild = message.guild;
+        const online = guild.members.cache.filter(m => m.presence?.status === 'online').size;
+        const idle = guild.members.cache.filter(m => m.presence?.status === 'idle').size;
+        const dnd = guild.members.cache.filter(m => m.presence?.status === 'dnd').size;
         return {
             name: guild.name, id: guild.id, memberCount: guild.memberCount,
+            online, idle, dnd,
             channelCount: guild.channels.cache.size, roleCount: guild.roles.cache.size,
             emojiCount: guild.emojis.cache.size,
             owner: (await guild.fetchOwner()).displayName,

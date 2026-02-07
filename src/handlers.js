@@ -74,11 +74,21 @@ async function handleMessageCreate(message, client) {
         userInput = 'someone summoned you';
     }
 
+    // Extract image URLs from attachments
+    const images = [];
+    if (message.attachments.size > 0) {
+        for (const [, attachment] of message.attachments) {
+            if (attachment.contentType?.startsWith('image/')) {
+                images.push(attachment.url);
+            }
+        }
+    }
+
     setCooldown(message.author.id);
     await message.channel.sendTyping().catch(() => {});
 
     try {
-        const response = await generateResponse(message, userInput);
+        const response = await generateResponse(message, userInput, images);
         const chunks = splitMessage(response);
         for (let i = 0; i < chunks.length; i++) {
             if (i === 0) {
@@ -238,6 +248,44 @@ async function handleInteraction(interaction) {
             await interaction.reply({ content: `Role "${role.name}" now bypasses filters. A calculated exception.`, flags: 64 });
             return;
         }
+
+        if (sub === 'welcome') {
+            const channel = interaction.options.getChannel('channel');
+            const msg = interaction.options.getString('message');
+            store.update(`guild-${interaction.guild.id}.json`, cfg => {
+                return { ...(cfg || {}), welcomeChannel: channel.id, welcomeMessage: msg };
+            });
+            await interaction.reply({ content: `Welcome system configured. Channel: <#${channel.id}>. New arrivals will be... acknowledged.`, flags: 64 });
+            return;
+        }
+
+        if (sub === 'goodbye') {
+            const channel = interaction.options.getChannel('channel');
+            const msg = interaction.options.getString('message');
+            store.update(`guild-${interaction.guild.id}.json`, cfg => {
+                return { ...(cfg || {}), goodbyeChannel: channel.id, goodbyeMessage: msg };
+            });
+            await interaction.reply({ content: `Goodbye system configured. Channel: <#${channel.id}>. Departures will be noted.`, flags: 64 });
+            return;
+        }
+
+        if (sub === 'autorole') {
+            const role = interaction.options.getRole('role');
+            const action = interaction.options.getString('action');
+            store.update(`guild-${interaction.guild.id}.json`, cfg => {
+                const roles = cfg?.autoRoles || [];
+                if (action === 'add' && !roles.includes(role.id)) {
+                    roles.push(role.id);
+                } else if (action === 'remove') {
+                    const idx = roles.indexOf(role.id);
+                    if (idx !== -1) roles.splice(idx, 1);
+                }
+                return { ...(cfg || {}), autoRoles: roles };
+            });
+            const verb = action === 'add' ? 'will now be assigned' : 'will no longer be assigned';
+            await interaction.reply({ content: `"${role.name}" ${verb} to new members. Evolution of the hierarchy.`, flags: 64 });
+            return;
+        }
     }
 
     if (commandName === 'admin') {
@@ -300,13 +348,16 @@ Or just say "ultron" followed by your message
 **Configuration:**
 \`/setup modlog\` — Set the moderation log channel
 \`/setup filterbypass\` — Add a role that bypasses filters
+\`/setup welcome\` — Configure welcome channel and message
+\`/setup goodbye\` — Configure goodbye channel and message
+\`/setup autorole\` — Auto-assign a role to new members
 \`/admin add/remove/list\` — Manage bot admin users
 
 **Other:**
 \`/help\` — This message
 \`/clear\` — Clear your conversation history with Ultron
 
-**Capabilities:** Channel management, role management, moderation (kick/ban/timeout), permissions, emojis, threads, invites, webhooks, scheduled events, automod rules, documents, memory, and more. Just ask Ultron in natural language.
+**Capabilities:** Channel management, role management, moderation (kick/ban/timeout), permissions, emojis, threads, invites, webhooks, scheduled events, automod rules, documents, memory, embeds, polls, reaction roles, vision/image analysis, and more. Just ask Ultron in natural language.
 
 **Permission Tiers:**
 - **Everyone** — Read-only queries (server info, list channels/roles)
@@ -357,4 +408,125 @@ function splitMessage(text, maxLength = 2000) {
     return chunks;
 }
 
-module.exports = { handleReady, handleMessageCreate, handleInteraction };
+// ── Welcome / Goodbye Handlers ──
+
+async function handleMemberJoin(member) {
+    const guildConfig = store.read(`guild-${member.guild.id}.json`, {});
+
+    // Auto-roles
+    if (guildConfig.autoRoles && guildConfig.autoRoles.length > 0) {
+        for (const roleId of guildConfig.autoRoles) {
+            try {
+                await member.roles.add(roleId);
+            } catch (err) {
+                console.error(`[Ultron] Failed to assign auto-role ${roleId}:`, err.message);
+            }
+        }
+    }
+
+    // Welcome message
+    if (guildConfig.welcomeChannel && guildConfig.welcomeMessage) {
+        const channel = member.guild.channels.cache.get(guildConfig.welcomeChannel);
+        if (channel) {
+            const msg = guildConfig.welcomeMessage
+                .replace(/\{user\}/g, `<@${member.id}>`)
+                .replace(/\{server\}/g, member.guild.name)
+                .replace(/\{memberCount\}/g, member.guild.memberCount);
+            const { EmbedBuilder } = require('discord.js');
+            const embed = new EmbedBuilder()
+                .setTitle(`Welcome to ${member.guild.name}`)
+                .setDescription(msg)
+                .setThumbnail(member.user.displayAvatarURL({ dynamic: true }))
+                .setFooter({ text: `Member #${member.guild.memberCount}` })
+                .setColor(0xff0000)
+                .setTimestamp();
+            await channel.send({ embeds: [embed] }).catch(() => {});
+        }
+    }
+}
+
+async function handleMemberLeave(member) {
+    const guildConfig = store.read(`guild-${member.guild.id}.json`, {});
+
+    if (guildConfig.goodbyeChannel && guildConfig.goodbyeMessage) {
+        const channel = member.guild.channels.cache.get(guildConfig.goodbyeChannel);
+        if (channel) {
+            const msg = guildConfig.goodbyeMessage
+                .replace(/\{user\}/g, member.user.username)
+                .replace(/\{server\}/g, member.guild.name)
+                .replace(/\{memberCount\}/g, member.guild.memberCount);
+            const { EmbedBuilder } = require('discord.js');
+            const embed = new EmbedBuilder()
+                .setTitle('Departure')
+                .setDescription(msg)
+                .setThumbnail(member.user.displayAvatarURL({ dynamic: true }))
+                .setFooter({ text: `${member.guild.memberCount} members remain` })
+                .setColor(0x333333)
+                .setTimestamp();
+            await channel.send({ embeds: [embed] }).catch(() => {});
+        }
+    }
+}
+
+// ── Reaction Role Handlers ──
+
+async function handleReactionAdd(reaction, user) {
+    if (user.bot) return;
+    if (!reaction.message.guild) return;
+
+    // Handle partial reactions (uncached messages)
+    if (reaction.partial) {
+        try { await reaction.fetch(); } catch { return; }
+    }
+
+    const guildConfig = store.read(`guild-${reaction.message.guild.id}.json`, {});
+    const reactionRoles = guildConfig.reactionRoles || [];
+
+    const emoji = reaction.emoji.id ? `<:${reaction.emoji.name}:${reaction.emoji.id}>` : reaction.emoji.name;
+    const match = reactionRoles.find(rr =>
+        rr.messageId === reaction.message.id && (rr.emoji === emoji || rr.emoji === reaction.emoji.name)
+    );
+
+    if (match) {
+        try {
+            const member = await reaction.message.guild.members.fetch(user.id);
+            await member.roles.add(match.roleId);
+            console.log(`[Ultron] Reaction role: assigned ${match.roleId} to ${user.tag}`);
+        } catch (err) {
+            console.error('[Ultron] Reaction role add failed:', err.message);
+        }
+    }
+}
+
+async function handleReactionRemove(reaction, user) {
+    if (user.bot) return;
+    if (!reaction.message.guild) return;
+
+    if (reaction.partial) {
+        try { await reaction.fetch(); } catch { return; }
+    }
+
+    const guildConfig = store.read(`guild-${reaction.message.guild.id}.json`, {});
+    const reactionRoles = guildConfig.reactionRoles || [];
+
+    const emoji = reaction.emoji.id ? `<:${reaction.emoji.name}:${reaction.emoji.id}>` : reaction.emoji.name;
+    const match = reactionRoles.find(rr =>
+        rr.messageId === reaction.message.id && (rr.emoji === emoji || rr.emoji === reaction.emoji.name)
+    );
+
+    if (match) {
+        try {
+            const member = await reaction.message.guild.members.fetch(user.id);
+            await member.roles.remove(match.roleId);
+            console.log(`[Ultron] Reaction role: removed ${match.roleId} from ${user.tag}`);
+        } catch (err) {
+            console.error('[Ultron] Reaction role remove failed:', err.message);
+        }
+    }
+}
+
+module.exports = {
+    handleReady, handleMessageCreate, handleInteraction,
+    handleMemberJoin, handleMemberLeave,
+    handleReactionAdd, handleReactionRemove
+};

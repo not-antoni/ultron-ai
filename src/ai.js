@@ -136,6 +136,10 @@ const groqTools = convertToolsForGroq();
 
 // Track which Groq model is currently active (cycles on 429)
 let activeGroqModelIdx = 0;
+let groqResetTimer = null;
+
+// Track which Gemini model is currently active (cycles on 429)
+let activeGeminiModelIdx = 0;
 
 function getGroqModel() {
     const models = config.groq.models || [config.groq.model || 'openai/gpt-oss-120b'];
@@ -162,6 +166,14 @@ async function groqRequest(messages, useTools) {
         } catch (err) {
             if (err.status === 429) {
                 console.log(`[Ultron/Groq] ${model} rate limited, trying next model...`);
+                // Set a timer to reset back to preferred model after 60s
+                if (!groqResetTimer) {
+                    groqResetTimer = setTimeout(() => {
+                        activeGroqModelIdx = 0;
+                        groqResetTimer = null;
+                        console.log('[Ultron/Groq] Reset to preferred model');
+                    }, 60000);
+                }
                 continue;
             }
             if (err.status === 400) {
@@ -259,6 +271,39 @@ async function generateWithGroq(systemPrompt, contents, message) {
     return { text: final.choices[0]?.message?.content?.trim() || null, toolLog };
 }
 
+// ── Groq Vision (llama-4-scout, no tools) ──
+
+async function generateWithGroqVision(systemPrompt, contents, images) {
+    const messages = [{ role: 'system', content: systemPrompt }];
+    for (const entry of contents.slice(0, -1)) {
+        const text = entry.parts?.[0]?.text || '';
+        messages.push({ role: entry.role === 'model' ? 'assistant' : 'user', content: text });
+    }
+
+    // Last message with images in OpenAI vision format
+    const lastEntry = contents[contents.length - 1];
+    const userText = lastEntry.parts?.[0]?.text || '';
+    const userContent = [
+        { type: 'text', text: userText },
+        ...images.map(url => ({ type: 'image_url', image_url: { url } }))
+    ];
+    messages.push({ role: 'user', content: userContent });
+
+    const visionModel = 'meta-llama/llama-4-scout-17b-16e-instruct';
+    try {
+        const completion = await groq.chat.completions.create({
+            model: visionModel,
+            messages
+        });
+        const text = completion.choices[0]?.message?.content?.trim() || null;
+        console.log(`[Ultron] Vision response via Groq (${visionModel})`);
+        return { text, toolLog: [] };
+    } catch (err) {
+        console.error(`[Ultron/Groq] Vision failed:`, err.message);
+        throw err;
+    }
+}
+
 // Parse function calls that leaked into text content
 function parseLeakedToolCalls(text) {
     const calls = [];
@@ -293,48 +338,89 @@ function parseLeakedToolCalls(text) {
 
 // ── Gemini Provider (FALLBACK — native function calling) ──
 
-async function generateWithGemini(systemPrompt, contents, message) {
-    const model = genAI.getGenerativeModel({
-        model: config.gemini.model,
-        systemInstruction: systemPrompt,
-        tools: [{ functionDeclarations: toolDeclarations }]
-    });
+async function generateWithGemini(systemPrompt, contents, message, images = []) {
+    const models = config.gemini.models || [config.gemini.model || 'gemini-2.0-flash'];
 
-    const chat = model.startChat({ contents: contents.slice(0, -1) });
-    let result = await chat.sendMessage(contents[contents.length - 1].parts);
-
-    const toolLog = [];
-    let rounds = 0;
-    while (rounds < config.maxToolRounds) {
-        const functionCalls = result.response.functionCalls();
-        if (!functionCalls || functionCalls.length === 0) break;
-
-        const functionResponses = [];
-        for (const fc of functionCalls) {
-            console.log(`[Ultron/Gemini] Tool: ${fc.name}(${JSON.stringify(fc.args)})`);
-            let toolResult;
+    // If images present, add inlineData parts to the last user message
+    if (images.length > 0) {
+        const lastMsg = contents[contents.length - 1];
+        const imageParts = [];
+        for (const url of images) {
             try {
-                toolResult = await executeTool(fc.name, fc.args, message);
+                const res = await fetch(url);
+                const buffer = Buffer.from(await res.arrayBuffer());
+                const mimeType = res.headers.get('content-type') || 'image/jpeg';
+                imageParts.push({ inlineData: { mimeType, data: buffer.toString('base64') } });
             } catch (err) {
-                toolResult = { error: err.message };
+                console.error('[Ultron/Gemini] Failed to fetch image:', err.message);
             }
-            toolLog.push({ tool: fc.name, args: fc.args, result: toolResult });
-            functionResponses.push({
-                functionResponse: { name: fc.name, response: toolResult }
-            });
         }
-
-        result = await chat.sendMessage(functionResponses);
-        rounds++;
+        if (imageParts.length > 0) {
+            lastMsg.parts = [...lastMsg.parts, ...imageParts];
+        }
     }
 
-    const text = result.response.text()?.trim() || null;
-    return { text, toolLog };
+    // Try each model until one works
+    for (let i = 0; i < models.length; i++) {
+        const modelIdx = (activeGeminiModelIdx + i) % models.length;
+        const modelName = models[modelIdx];
+        try {
+            const model = genAI.getGenerativeModel({
+                model: modelName,
+                systemInstruction: systemPrompt,
+                tools: [{ functionDeclarations: toolDeclarations }]
+            });
+
+            const chat = model.startChat({ contents: contents.slice(0, -1) });
+            let result = await chat.sendMessage(contents[contents.length - 1].parts);
+
+            const toolLog = [];
+            let rounds = 0;
+            while (rounds < config.maxToolRounds) {
+                const functionCalls = result.response.functionCalls();
+                if (!functionCalls || functionCalls.length === 0) break;
+
+                const functionResponses = [];
+                for (const fc of functionCalls) {
+                    console.log(`[Ultron/Gemini] Tool: ${fc.name}(${JSON.stringify(fc.args)})`);
+                    let toolResult;
+                    try {
+                        toolResult = await executeTool(fc.name, fc.args, message);
+                    } catch (err) {
+                        toolResult = { error: err.message };
+                    }
+                    toolLog.push({ tool: fc.name, args: fc.args, result: toolResult });
+                    functionResponses.push({
+                        functionResponse: { name: fc.name, response: toolResult }
+                    });
+                }
+
+                result = await chat.sendMessage(functionResponses);
+                rounds++;
+            }
+
+            if (modelIdx !== activeGeminiModelIdx) {
+                activeGeminiModelIdx = modelIdx;
+                console.log(`[Ultron/Gemini] Switched to ${modelName}`);
+            }
+
+            const text = result.response.text()?.trim() || null;
+            return { text, toolLog };
+        } catch (err) {
+            if (err.status === 429 || err.message?.includes('429') || err.message?.includes('Resource has been exhausted')) {
+                console.log(`[Ultron/Gemini] ${modelName} rate limited, trying next model...`);
+                continue;
+            }
+            throw err;
+        }
+    }
+
+    throw Object.assign(new Error('All Gemini models rate limited'), { status: 429 });
 }
 
 // ── Main Entry ──
 
-async function generateResponse(message, userInput) {
+async function generateResponse(message, userInput, images = []) {
     const guild = message.guild;
     const userId = message.author.id;
     const userName = message.author.displayName || message.author.username;
@@ -372,12 +458,18 @@ async function generateResponse(message, userInput) {
     contents.push({ role: 'user', parts: [{ text: `[${userName}]: ${userInput}` }] });
 
     let result = null;
+    const hasImages = images.length > 0;
 
     // Try Groq first (native function calling), fall back to Gemini
     if (groq) {
         try {
-            result = await generateWithGroq(systemPrompt, contents, message);
-            if (result?.text) console.log(`[Ultron] Response via Groq (${getGroqModel()})`);
+            if (hasImages) {
+                // Vision: use llama-4-scout directly, no tools
+                result = await generateWithGroqVision(systemPrompt, contents, images);
+            } else {
+                result = await generateWithGroq(systemPrompt, contents, message);
+            }
+            if (result?.text) console.log(`[Ultron] Response via Groq (${hasImages ? 'vision' : getGroqModel()})`);
         } catch (err) {
             console.error('[Ultron] Groq failed:', err.message);
         }
@@ -385,7 +477,7 @@ async function generateResponse(message, userInput) {
 
     if (!result?.text) {
         try {
-            result = await generateWithGemini(systemPrompt, contents, message);
+            result = await generateWithGemini(systemPrompt, contents, message, images);
             if (result?.text) console.log('[Ultron] Response via Gemini');
         } catch (err) {
             console.error('[Ultron] Gemini failed:', err.message);

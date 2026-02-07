@@ -10,7 +10,7 @@ const toolDeclarations = [
             type: SchemaType.OBJECT,
             properties: {
                 name: { type: SchemaType.STRING, description: 'Channel name' },
-                type: { type: SchemaType.STRING, description: 'Channel type: text, voice, or category', enum: ['text', 'voice', 'category'] },
+                type: { type: SchemaType.STRING, description: 'Channel type', enum: ['text', 'voice', 'category', 'forum', 'announcement'] },
                 topic: { type: SchemaType.STRING, description: 'Channel topic (text channels only)' },
                 category: { type: SchemaType.STRING, description: 'Name of the category to place this channel in' }
             },
@@ -720,6 +720,295 @@ const toolDeclarations = [
         name: 'listRoles',
         description: 'List all roles in the server',
         parameters: { type: SchemaType.OBJECT, properties: {} }
+    },
+
+    // ── Message Reading ──
+
+    {
+        name: 'readMessages',
+        description: 'Fetch the most recent messages from a channel. Use this to see what people have been saying.',
+        parameters: {
+            type: SchemaType.OBJECT,
+            properties: {
+                channel: { type: SchemaType.STRING, description: 'Channel name or ID (defaults to current)' },
+                count: { type: SchemaType.NUMBER, description: 'Number of messages to fetch (1-25, default 10)' }
+            }
+        }
+    },
+    {
+        name: 'fetchMessage',
+        description: 'Fetch a single message by its ID from a channel',
+        parameters: {
+            type: SchemaType.OBJECT,
+            properties: {
+                channel: { type: SchemaType.STRING, description: 'Channel name or ID' },
+                messageId: { type: SchemaType.STRING, description: 'Message ID to fetch' }
+            },
+            required: ['messageId']
+        }
+    },
+
+    // ── Rich Messages ──
+
+    {
+        name: 'sendEmbed',
+        description: 'Send a rich embed message to a channel. Use for announcements, rules, formatted info.',
+        parameters: {
+            type: SchemaType.OBJECT,
+            properties: {
+                channel: { type: SchemaType.STRING, description: 'Channel name or ID' },
+                title: { type: SchemaType.STRING, description: 'Embed title' },
+                description: { type: SchemaType.STRING, description: 'Embed body text' },
+                color: { type: SchemaType.STRING, description: 'Hex color code (e.g. #ff0000)' },
+                fields: { type: SchemaType.STRING, description: 'JSON array of {name, value} objects for embed fields' },
+                footer: { type: SchemaType.STRING, description: 'Footer text' },
+                image: { type: SchemaType.STRING, description: 'Image URL to display' },
+                thumbnail: { type: SchemaType.STRING, description: 'Thumbnail URL' }
+            },
+            required: ['channel']
+        }
+    },
+    {
+        name: 'replyToMessage',
+        description: 'Reply to a specific message by ID in a channel',
+        parameters: {
+            type: SchemaType.OBJECT,
+            properties: {
+                channel: { type: SchemaType.STRING, description: 'Channel name or ID' },
+                messageId: { type: SchemaType.STRING, description: 'Message ID to reply to' },
+                content: { type: SchemaType.STRING, description: 'Reply content' }
+            },
+            required: ['channel', 'messageId', 'content']
+        }
+    },
+    {
+        name: 'editMessage',
+        description: 'Edit a message previously sent by the bot',
+        parameters: {
+            type: SchemaType.OBJECT,
+            properties: {
+                channel: { type: SchemaType.STRING, description: 'Channel name or ID' },
+                messageId: { type: SchemaType.STRING, description: 'Message ID to edit' },
+                content: { type: SchemaType.STRING, description: 'New message content' }
+            },
+            required: ['channel', 'messageId', 'content']
+        }
+    },
+    {
+        name: 'addReaction',
+        description: 'Add an emoji reaction to a message',
+        parameters: {
+            type: SchemaType.OBJECT,
+            properties: {
+                channel: { type: SchemaType.STRING, description: 'Channel name or ID (defaults to current)' },
+                messageId: { type: SchemaType.STRING, description: 'Message ID to react to' },
+                emoji: { type: SchemaType.STRING, description: 'Emoji to react with (unicode emoji or custom emoji name)' }
+            },
+            required: ['messageId', 'emoji']
+        }
+    },
+    {
+        name: 'createPoll',
+        description: 'Create a Discord poll in a channel',
+        parameters: {
+            type: SchemaType.OBJECT,
+            properties: {
+                channel: { type: SchemaType.STRING, description: 'Channel name or ID (defaults to current)' },
+                question: { type: SchemaType.STRING, description: 'Poll question' },
+                options: { type: SchemaType.STRING, description: 'Comma-separated list of poll options' },
+                duration: { type: SchemaType.NUMBER, description: 'Poll duration in hours (1-168, default 24)' }
+            },
+            required: ['question', 'options']
+        }
+    },
+
+    // ── Direct Messages ──
+
+    {
+        name: 'dmUser',
+        description: 'Send a direct message to a server member',
+        parameters: {
+            type: SchemaType.OBJECT,
+            properties: {
+                user: { type: SchemaType.STRING, description: 'Username, display name, or user ID' },
+                content: { type: SchemaType.STRING, description: 'Message content to send' }
+            },
+            required: ['user', 'content']
+        }
+    },
+
+    // ── Additional Channel Management ──
+
+    {
+        name: 'moveChannel',
+        description: 'Move a channel to a different category',
+        parameters: {
+            type: SchemaType.OBJECT,
+            properties: {
+                channel: { type: SchemaType.STRING, description: 'Channel name or ID to move' },
+                category: { type: SchemaType.STRING, description: 'Target category name or ID' }
+            },
+            required: ['channel', 'category']
+        }
+    },
+    {
+        name: 'cloneChannel',
+        description: 'Clone a channel with its permissions',
+        parameters: {
+            type: SchemaType.OBJECT,
+            properties: {
+                channel: { type: SchemaType.STRING, description: 'Channel name or ID to clone' },
+                newName: { type: SchemaType.STRING, description: 'Name for the cloned channel (optional)' }
+            },
+            required: ['channel']
+        }
+    },
+    {
+        name: 'setChannelNSFW',
+        description: 'Set or remove the NSFW flag on a text channel',
+        parameters: {
+            type: SchemaType.OBJECT,
+            properties: {
+                channel: { type: SchemaType.STRING, description: 'Channel name or ID' },
+                nsfw: { type: SchemaType.BOOLEAN, description: 'Whether the channel should be NSFW' }
+            },
+            required: ['channel', 'nsfw']
+        }
+    },
+    {
+        name: 'setVoiceUserLimit',
+        description: 'Set the maximum number of users in a voice channel (0 = unlimited)',
+        parameters: {
+            type: SchemaType.OBJECT,
+            properties: {
+                channel: { type: SchemaType.STRING, description: 'Voice channel name or ID' },
+                limit: { type: SchemaType.NUMBER, description: 'Max users (0 for unlimited)' }
+            },
+            required: ['channel', 'limit']
+        }
+    },
+
+    // ── Additional Info Queries ──
+
+    {
+        name: 'listEmojis',
+        description: 'List all custom emojis in the server',
+        parameters: { type: SchemaType.OBJECT, properties: {} }
+    },
+    {
+        name: 'listBans',
+        description: 'List all banned users in the server',
+        parameters: { type: SchemaType.OBJECT, properties: {} }
+    },
+
+    // ── Reaction Roles ──
+
+    {
+        name: 'setupReactionRole',
+        description: 'Set up a reaction role: when users react to a message with a specific emoji, they get a role',
+        parameters: {
+            type: SchemaType.OBJECT,
+            properties: {
+                channel: { type: SchemaType.STRING, description: 'Channel name or ID containing the message' },
+                messageId: { type: SchemaType.STRING, description: 'Message ID to add the reaction role to' },
+                emoji: { type: SchemaType.STRING, description: 'Emoji for the reaction (unicode or custom emoji name)' },
+                role: { type: SchemaType.STRING, description: 'Role name or ID to assign when reacted' }
+            },
+            required: ['channel', 'messageId', 'emoji', 'role']
+        }
+    },
+    {
+        name: 'removeReactionRole',
+        description: 'Remove a reaction role from a message',
+        parameters: {
+            type: SchemaType.OBJECT,
+            properties: {
+                messageId: { type: SchemaType.STRING, description: 'Message ID to remove the reaction role from' },
+                emoji: { type: SchemaType.STRING, description: 'Emoji of the reaction role to remove' }
+            },
+            required: ['messageId']
+        }
+    },
+    {
+        name: 'listReactionRoles',
+        description: 'List all configured reaction roles in the server',
+        parameters: { type: SchemaType.OBJECT, properties: {} }
+    },
+
+    // ── Welcome/Goodbye/AutoRole Config ──
+
+    {
+        name: 'setWelcomeChannel',
+        description: 'Set the welcome channel and message for new members. Template vars: {user} {server} {memberCount}',
+        parameters: {
+            type: SchemaType.OBJECT,
+            properties: {
+                channel: { type: SchemaType.STRING, description: 'Channel name or ID for welcome messages' },
+                message: { type: SchemaType.STRING, description: 'Welcome message template. Use {user} for mention, {server} for server name, {memberCount} for count.' }
+            },
+            required: ['channel']
+        }
+    },
+    {
+        name: 'setGoodbyeChannel',
+        description: 'Set the goodbye channel and message for leaving members. Template vars: {user} {server} {memberCount}',
+        parameters: {
+            type: SchemaType.OBJECT,
+            properties: {
+                channel: { type: SchemaType.STRING, description: 'Channel name or ID for goodbye messages' },
+                message: { type: SchemaType.STRING, description: 'Goodbye message template. Use {user} for name, {server} for server name.' }
+            },
+            required: ['channel']
+        }
+    },
+    {
+        name: 'setAutoRole',
+        description: 'Add or remove a role from the auto-assign-on-join list',
+        parameters: {
+            type: SchemaType.OBJECT,
+            properties: {
+                role: { type: SchemaType.STRING, description: 'Role name or ID' },
+                action: { type: SchemaType.STRING, description: 'Whether to add or remove the role', enum: ['add', 'remove'] }
+            },
+            required: ['role', 'action']
+        }
+    },
+
+    // ── Server Settings (extended) ──
+
+    {
+        name: 'setAFKChannel',
+        description: 'Set the server AFK voice channel and timeout',
+        parameters: {
+            type: SchemaType.OBJECT,
+            properties: {
+                channel: { type: SchemaType.STRING, description: 'Voice channel name or ID for AFK' },
+                timeout: { type: SchemaType.NUMBER, description: 'AFK timeout in seconds (60, 300, 900, 1800, 3600)' }
+            },
+            required: ['channel']
+        }
+    },
+    {
+        name: 'setDefaultNotifications',
+        description: 'Set the server default notification level',
+        parameters: {
+            type: SchemaType.OBJECT,
+            properties: {
+                level: { type: SchemaType.STRING, description: 'Notification level', enum: ['all', 'mentions'] }
+            },
+            required: ['level']
+        }
+    },
+    {
+        name: 'setServerBanner',
+        description: 'Set the server banner image (requires boost level 2+)',
+        parameters: {
+            type: SchemaType.OBJECT,
+            properties: {
+                url: { type: SchemaType.STRING, description: 'Image URL for the banner' }
+            },
+            required: ['url']
+        }
     }
 ];
 

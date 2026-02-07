@@ -92,6 +92,52 @@ const commands = [
                         .setDescription('Role to bypass filters')
                         .setRequired(true)
                 )
+        )
+        .addSubcommand(sub =>
+            sub.setName('welcome')
+                .setDescription('Set the welcome channel and message')
+                .addChannelOption(opt =>
+                    opt.setName('channel')
+                        .setDescription('Channel for welcome messages')
+                        .setRequired(true)
+                )
+                .addStringOption(opt =>
+                    opt.setName('message')
+                        .setDescription('Welcome message ({user}, {server}, {memberCount})')
+                        .setRequired(true)
+                )
+        )
+        .addSubcommand(sub =>
+            sub.setName('goodbye')
+                .setDescription('Set the goodbye channel and message')
+                .addChannelOption(opt =>
+                    opt.setName('channel')
+                        .setDescription('Channel for goodbye messages')
+                        .setRequired(true)
+                )
+                .addStringOption(opt =>
+                    opt.setName('message')
+                        .setDescription('Goodbye message ({user}, {server}, {memberCount})')
+                        .setRequired(true)
+                )
+        )
+        .addSubcommand(sub =>
+            sub.setName('autorole')
+                .setDescription('Add or remove an auto-assigned role for new members')
+                .addRoleOption(opt =>
+                    opt.setName('role')
+                        .setDescription('Role to auto-assign on join')
+                        .setRequired(true)
+                )
+                .addStringOption(opt =>
+                    opt.setName('action')
+                        .setDescription('Add or remove this role from auto-assign')
+                        .setRequired(true)
+                        .addChoices(
+                            { name: 'Add', value: 'add' },
+                            { name: 'Remove', value: 'remove' }
+                        )
+                )
         ),
 
     new SlashCommandBuilder()

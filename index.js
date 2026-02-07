@@ -2,7 +2,11 @@ const { Client, GatewayIntentBits, Partials, REST, Routes, Events } = require('d
 const express = require('express');
 const config = require('./config');
 const { commands } = require('./src/commands');
-const { handleReady, handleMessageCreate, handleInteraction } = require('./src/handlers');
+const {
+    handleReady, handleMessageCreate, handleInteraction,
+    handleMemberJoin, handleMemberLeave,
+    handleReactionAdd, handleReactionRemove
+} = require('./src/handlers');
 
 // ── Discord Client ──
 
@@ -14,7 +18,8 @@ const client = new Client({
         GatewayIntentBits.GuildPresences,
         GatewayIntentBits.MessageContent,
         GatewayIntentBits.DirectMessages,
-        GatewayIntentBits.GuildMessageReactions
+        GatewayIntentBits.GuildMessageReactions,
+        GatewayIntentBits.GuildVoiceStates
     ],
     allowedMentions: { parse: ['users'], repliedUser: false },
     partials: [Partials.Message, Partials.Channel, Partials.Reaction]
@@ -64,6 +69,38 @@ client.on(Events.InteractionCreate, async interaction => {
     }
 });
 
+client.on(Events.GuildMemberAdd, async member => {
+    try {
+        await handleMemberJoin(member);
+    } catch (error) {
+        console.error('[Ultron] Member join error:', error);
+    }
+});
+
+client.on(Events.GuildMemberRemove, async member => {
+    try {
+        await handleMemberLeave(member);
+    } catch (error) {
+        console.error('[Ultron] Member leave error:', error);
+    }
+});
+
+client.on(Events.MessageReactionAdd, async (reaction, user) => {
+    try {
+        await handleReactionAdd(reaction, user);
+    } catch (error) {
+        console.error('[Ultron] Reaction add error:', error);
+    }
+});
+
+client.on(Events.MessageReactionRemove, async (reaction, user) => {
+    try {
+        await handleReactionRemove(reaction, user);
+    } catch (error) {
+        console.error('[Ultron] Reaction remove error:', error);
+    }
+});
+
 // ── Health Server ──
 
 const app = express();
@@ -83,6 +120,9 @@ function shutdown(signal) {
 
 process.on('SIGINT', () => shutdown('SIGINT'));
 process.on('SIGTERM', () => shutdown('SIGTERM'));
+process.on('unhandledRejection', (err) => {
+    console.error('[Ultron] Unhandled rejection:', err);
+});
 
 // ── Login ──
 

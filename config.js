@@ -7,7 +7,12 @@ module.exports = {
     },
     gemini: {
         apiKey: process.env.GEMINI_API_KEY,
-        model: 'gemini-2.0-flash'
+        model: 'gemini-2.0-flash',
+        models: [
+            'gemini-2.0-flash',
+            'gemini-1.5-flash',
+            'gemini-1.5-pro'
+        ]
     },
     groq: {
         apiKey: process.env.GROQ_API_KEY || '',
