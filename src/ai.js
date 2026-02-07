@@ -105,12 +105,13 @@ function extractJSON(text, startIndex) {
 // ── Groq Provider (PRIMARY — native function calling) ──
 
 function convertToolsForGroq() {
-    const typeMap = { STRING: 'string', NUMBER: 'number', INTEGER: 'integer', BOOLEAN: 'boolean', OBJECT: 'object', ARRAY: 'array' };
+    // SchemaType values are already lowercase ('string', 'number', etc.)
+    // which matches OpenAI tool format — pass through directly
     return toolDeclarations.map(decl => {
         const props = {};
         if (decl.parameters?.properties) {
             for (const [key, val] of Object.entries(decl.parameters.properties)) {
-                const prop = { type: typeMap[val.type] || 'string' };
+                const prop = { type: val.type || 'string' };
                 if (val.description) prop.description = val.description;
                 if (val.enum) prop.enum = val.enum;
                 props[key] = prop;
@@ -161,6 +162,10 @@ async function groqRequest(messages, useTools) {
         } catch (err) {
             if (err.status === 429) {
                 console.log(`[Ultron/Groq] ${model} rate limited, trying next model...`);
+                continue;
+            }
+            if (err.status === 400) {
+                console.log(`[Ultron/Groq] ${model} rejected (${err.message?.slice(0, 80)}), trying next model...`);
                 continue;
             }
             if (err.status === 503) {
