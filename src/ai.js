@@ -15,6 +15,7 @@ const groq = config.groq.apiKey ? new Groq({ apiKey: config.groq.apiKey }) : nul
 const LEAKED_PATTERNS = [
     /function=\w+>[^\n]*/gi,                          // function=createChannel>{"name":"skull"}
     /<function=\w+>[^<]*<\/function>/gi,               // <function=createChannel>...</function>
+    /\w+:\d+<\|tool_call_argument_begin\|>[^\n]*/gi,   // createChannel:2<|tool_call_argument_begin|>{"name":"skull"}
     /\{\s*"function_call"\s*:[\s\S]*?\}\s*/g,          // {"function_call": ...}
     /```(?:json)?\s*\{[\s\S]*?"(?:name|function)"[\s\S]*?\}\s*```/g, // ```json {"name":"createChannel"...}```
 ];
@@ -309,13 +310,26 @@ function parseLeakedToolCalls(text) {
     const calls = [];
     const toolNames = new Set(toolDeclarations.map(t => t.name));
 
-    // Pattern: function=toolName>{"arg":"val"} or <function=toolName>{"arg":"val"}</function>
-    const pattern1 = /(?:<)?function=(\w+)>/gi;
-    for (const match of text.matchAll(pattern1)) {
+    // Pattern: toolName:N<|tool_call_argument_begin|>{"arg":"val"} (kimi-k2 leaked format)
+    const pattern0 = /(\w+):\d+<\|tool_call_argument_begin\|>/gi;
+    for (const match of text.matchAll(pattern0)) {
         if (toolNames.has(match[1])) {
             const jsonStr = extractJSON(text, match.index + match[0].length);
             if (jsonStr) {
                 try { calls.push({ name: match[1], args: JSON.parse(jsonStr) }); } catch (_) {}
+            }
+        }
+    }
+
+    // Pattern: function=toolName>{"arg":"val"} or <function=toolName>{"arg":"val"}</function>
+    if (calls.length === 0) {
+        const pattern1 = /(?:<)?function=(\w+)>/gi;
+        for (const match of text.matchAll(pattern1)) {
+            if (toolNames.has(match[1])) {
+                const jsonStr = extractJSON(text, match.index + match[0].length);
+                if (jsonStr) {
+                    try { calls.push({ name: match[1], args: JSON.parse(jsonStr) }); } catch (_) {}
+                }
             }
         }
     }
