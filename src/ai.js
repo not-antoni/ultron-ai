@@ -170,7 +170,8 @@ function selectToolsForMessage(userInput, userTier) {
         return userTier >= requiredTier;
     });
 
-    return filtered;
+    // Strip internal-only fields (category) — Gemini API rejects unknown fields
+    return filtered.map(({ category, ...rest }) => rest);
 }
 
 // ── Dynamic tool_choice Detection ──
