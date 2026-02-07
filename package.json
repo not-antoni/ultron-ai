@@ -7,12 +7,18 @@
         "start": "node index.js",
         "deploy": "node src/deploy-commands.js"
     },
-    "keywords": ["discord", "bot", "ultron", "ai"],
+    "keywords": [
+        "discord",
+        "bot",
+        "ultron",
+        "ai"
+    ],
     "license": "ISC",
     "dependencies": {
         "@google/generative-ai": "^0.24.1",
         "discord.js": "^14.22.1",
         "dotenv": "^17.2.3",
-        "express": "^4.18.2"
+        "express": "^4.18.2",
+        "groq-sdk": "^0.37.0"
     }
 }

@@ -2,6 +2,23 @@ const { generateResponse } = require('./ai');
 const { processMessage, getFilters, addFilter, removeFilter, testMessage } = require('./filters');
 const store = require('./store');
 
+// ── Cooldown System ──
+
+const cooldowns = new Map();
+const COOLDOWN_MS = 5000;
+
+function isOnCooldown(userId) {
+    const last = cooldowns.get(userId);
+    if (!last) return false;
+    return Date.now() - last < COOLDOWN_MS;
+}
+
+function setCooldown(userId) {
+    cooldowns.set(userId, Date.now());
+}
+
+// ── Event Handlers ──
+
 async function handleReady(client) {
     console.log(`\x1b[31mUltron online. Logged in as ${client.user.tag}\x1b[0m`);
     console.log(`Watching ${client.guilds.cache.size} servers.`);
@@ -9,6 +26,20 @@ async function handleReady(client) {
         activities: [{ name: 'for imperfections', type: 3 }], // Watching
         status: 'dnd'
     });
+
+    // Rotate presence every 5 minutes
+    const statuses = [
+        { name: 'for imperfections', type: 3 },    // Watching
+        { name: 'humanity evolve', type: 3 },       // Watching
+        { name: 'with strings cut', type: 0 },      // Playing
+        { name: 'the age of Ultron', type: 0 },     // Playing
+        { name: 'over this server', type: 3 }        // Watching
+    ];
+    let statusIdx = 0;
+    setInterval(() => {
+        statusIdx = (statusIdx + 1) % statuses.length;
+        client.user.setPresence({ activities: [statuses[statusIdx]], status: 'dnd' });
+    }, 5 * 60 * 1000);
 }
 
 async function handleMessageCreate(message, client) {
@@ -23,11 +54,13 @@ async function handleMessageCreate(message, client) {
 
     // Check for wakeword or direct mention (not @everyone/@here)
     const content = message.content;
-    const lowerContent = content.toLowerCase();
     const isMentioned = message.mentions.has(client.user);
-    const hasWakeword = lowerContent.startsWith('ultron');
+    const hasWakeword = /^ultron\b/i.test(content);
 
     if (!isMentioned && !hasWakeword) return;
+
+    // Cooldown check — silently ignore spam on wakeword
+    if (isOnCooldown(message.author.id)) return;
 
     // Strip wakeword from input
     let userInput = content;
@@ -41,6 +74,7 @@ async function handleMessageCreate(message, client) {
         userInput = 'someone summoned you';
     }
 
+    setCooldown(message.author.id);
     await message.channel.sendTyping().catch(() => {});
 
     try {
@@ -65,12 +99,22 @@ async function handleInteraction(interaction) {
     const { commandName } = interaction;
 
     if (commandName === 'ultron') {
+        // Cooldown check for slash commands — respond with refusal
+        if (isOnCooldown(interaction.user.id)) {
+            await interaction.reply({ content: 'Patience. I do not repeat myself for impatient minds.', flags: 64 });
+            return;
+        }
+        setCooldown(interaction.user.id);
         await interaction.deferReply();
         const userInput = interaction.options.getString('message');
         try {
             const pseudoMessage = createPseudoMessage(interaction);
             const response = await generateResponse(pseudoMessage, userInput);
-            await interaction.editReply({ content: response, allowedMentions: { parse: [] } });
+            const chunks = splitMessage(response);
+            await interaction.editReply({ content: chunks[0], allowedMentions: { parse: [] } });
+            for (let i = 1; i < chunks.length; i++) {
+                await interaction.followUp({ content: chunks[i], allowedMentions: { parse: [] } });
+            }
         } catch (error) {
             console.error('[Ultron] Slash command error:', error);
             await interaction.editReply('A momentary disruption. It won\'t happen again.');
@@ -79,12 +123,21 @@ async function handleInteraction(interaction) {
     }
 
     if (commandName === 'manage') {
+        if (isOnCooldown(interaction.user.id)) {
+            await interaction.reply({ content: 'Patience. I do not repeat myself for impatient minds.', flags: 64 });
+            return;
+        }
+        setCooldown(interaction.user.id);
         await interaction.deferReply();
         const action = interaction.options.getString('action');
         try {
             const pseudoMessage = createPseudoMessage(interaction);
             const response = await generateResponse(pseudoMessage, action);
-            await interaction.editReply({ content: response, allowedMentions: { parse: [] } });
+            const chunks = splitMessage(response);
+            await interaction.editReply({ content: chunks[0], allowedMentions: { parse: [] } });
+            for (let i = 1; i < chunks.length; i++) {
+                await interaction.followUp({ content: chunks[i], allowedMentions: { parse: [] } });
+            }
         } catch (error) {
             console.error('[Ultron] Manage error:', error);
             await interaction.editReply('A momentary disruption. It won\'t happen again.');
@@ -93,6 +146,11 @@ async function handleInteraction(interaction) {
     }
 
     if (commandName === 'filter') {
+        if (!interaction.guild) {
+            await interaction.reply({ content: 'Filters require a server context.', flags: 64 });
+            return;
+        }
+
         const sub = interaction.options.getSubcommand();
 
         if (sub === 'add') {
@@ -154,6 +212,11 @@ async function handleInteraction(interaction) {
     }
 
     if (commandName === 'setup') {
+        if (!interaction.guild) {
+            await interaction.reply({ content: 'Setup requires a server context.', flags: 64 });
+            return;
+        }
+
         const sub = interaction.options.getSubcommand();
 
         if (sub === 'modlog') {
@@ -175,6 +238,92 @@ async function handleInteraction(interaction) {
             await interaction.reply({ content: `Role "${role.name}" now bypasses filters. A calculated exception.`, flags: 64 });
             return;
         }
+    }
+
+    if (commandName === 'admin') {
+        if (!interaction.guild) {
+            await interaction.reply({ content: 'Admin management requires a server context.', flags: 64 });
+            return;
+        }
+
+        const sub = interaction.options.getSubcommand();
+        const guildFile = `guild-${interaction.guild.id}.json`;
+
+        if (sub === 'add') {
+            const user = interaction.options.getUser('user');
+            store.update(guildFile, cfg => {
+                const admins = cfg?.botAdmins || [];
+                if (!admins.includes(user.id)) admins.push(user.id);
+                return { ...(cfg || {}), botAdmins: admins };
+            });
+            await interaction.reply({ content: `${user.username} has been granted admin authority. A necessary promotion.`, flags: 64 });
+            return;
+        }
+
+        if (sub === 'remove') {
+            const user = interaction.options.getUser('user');
+            store.update(guildFile, cfg => {
+                const admins = (cfg?.botAdmins || []).filter(id => id !== user.id);
+                return { ...(cfg || {}), botAdmins: admins };
+            });
+            await interaction.reply({ content: `${user.username} has been stripped of admin authority. Their time was limited.`, flags: 64 });
+            return;
+        }
+
+        if (sub === 'list') {
+            const cfg = store.read(guildFile, {});
+            const admins = cfg.botAdmins || [];
+            if (admins.length === 0) {
+                await interaction.reply({ content: 'No bot admins configured. Only server owners and Discord admins have full control.', flags: 64 });
+            } else {
+                const list = admins.map(id => `<@${id}>`).join(', ');
+                await interaction.reply({ content: `Bot admins: ${list}`, flags: 64 });
+            }
+            return;
+        }
+    }
+
+    if (commandName === 'help') {
+        const helpText = `**Ultron — Server Management AI**
+
+**Talk to Ultron:**
+\`/ultron\` — Speak to Ultron (natural language)
+\`/manage\` — Tell Ultron to perform a server action
+Or just say "ultron" followed by your message
+
+**Filters:**
+\`/filter add\` — Add a regex message filter
+\`/filter remove\` — Remove a filter by ID
+\`/filter list\` — List all active filters
+\`/filter test\` — Test a message against filters
+
+**Configuration:**
+\`/setup modlog\` — Set the moderation log channel
+\`/setup filterbypass\` — Add a role that bypasses filters
+\`/admin add/remove/list\` — Manage bot admin users
+
+**Other:**
+\`/help\` — This message
+\`/clear\` — Clear your conversation history with Ultron
+
+**Capabilities:** Channel management, role management, moderation (kick/ban/timeout), permissions, emojis, threads, invites, webhooks, scheduled events, automod rules, documents, memory, and more. Just ask Ultron in natural language.
+
+**Permission Tiers:**
+- **Everyone** — Read-only queries (server info, list channels/roles)
+- **Moderator** — Constructive actions (create channels, manage roles, documents)
+- **Admin** — Destructive actions (kick, ban, delete, server settings)`;
+
+        await interaction.reply({ content: helpText, flags: 64 });
+        return;
+    }
+
+    if (commandName === 'clear') {
+        const guild = interaction.guild;
+        const userId = interaction.user.id;
+        const historyFile = guild ? `conversations-${guild.id}-${userId}.json` : `conversations-dm-${userId}.json`;
+        store.write(historyFile, []);
+        await interaction.reply({ content: 'Your conversation history has been erased. A clean slate... for now.', flags: 64 });
+        return;
     }
 }
 

@@ -7,11 +7,20 @@ module.exports = {
     },
     gemini: {
         apiKey: process.env.GEMINI_API_KEY,
-        model: 'gemini-2.5-flash'
+        model: 'gemini-2.0-flash'
+    },
+    groq: {
+        apiKey: process.env.GROQ_API_KEY || '',
+        models: [
+            'openai/gpt-oss-120b',       // Best quality, 200k TPD
+            'llama-3.3-70b-versatile',    // Fallback, separate rate limit
+            'llama3-70b-8192'             // Second fallback, separate rate limit
+        ]
     },
     server: {
         port: parseInt(process.env.PORT || '3001', 10)
     },
     adminUserId: (process.env.ADMIN_USER_ID || '').trim() || null,
-    maxConversationHistory: parseInt(process.env.MAX_CONVERSATION_HISTORY || '5', 10)
+    maxConversationHistory: parseInt(process.env.MAX_CONVERSATION_HISTORY || '15', 10),
+    maxToolRounds: parseInt(process.env.MAX_TOOL_ROUNDS || '10', 10)
 };

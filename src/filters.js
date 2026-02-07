@@ -68,6 +68,11 @@ async function processMessage(message) {
     const content = message.content;
     const memberRoles = message.member?.roles.cache.map(r => r.id) || [];
 
+    // Check guild-level bypass roles (set via /setup filterbypass)
+    const guildCfg = store.read(`guild-${message.guild.id}.json`, {});
+    const bypassRoles = guildCfg.filterBypassRoles || [];
+    if (bypassRoles.some(id => memberRoles.includes(id))) return false;
+
     for (const filter of filters) {
         // Check bypass roles
         if (filter.bypassRoles?.some(id => memberRoles.includes(id))) continue;

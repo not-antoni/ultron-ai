@@ -92,7 +92,42 @@ const commands = [
                         .setDescription('Role to bypass filters')
                         .setRequired(true)
                 )
+        ),
+
+    new SlashCommandBuilder()
+        .setName('admin')
+        .setDescription('Manage Ultron bot admins')
+        .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
+        .addSubcommand(sub =>
+            sub.setName('add')
+                .setDescription('Add a bot admin')
+                .addUserOption(opt =>
+                    opt.setName('user')
+                        .setDescription('User to add as bot admin')
+                        .setRequired(true)
+                )
         )
+        .addSubcommand(sub =>
+            sub.setName('remove')
+                .setDescription('Remove a bot admin')
+                .addUserOption(opt =>
+                    opt.setName('user')
+                        .setDescription('User to remove from bot admins')
+                        .setRequired(true)
+                )
+        )
+        .addSubcommand(sub =>
+            sub.setName('list')
+                .setDescription('List all bot admins')
+        ),
+
+    new SlashCommandBuilder()
+        .setName('help')
+        .setDescription('Show Ultron help and capabilities'),
+
+    new SlashCommandBuilder()
+        .setName('clear')
+        .setDescription('Clear your conversation history with Ultron')
 ];
 
 module.exports = { commands };

@@ -25,38 +25,26 @@ const client = new Client({
 client.once(Events.ClientReady, async () => {
     await handleReady(client);
 
-    // Deploy slash commands globally + per-guild (guild = instant, global = persistent)
+    // Deploy slash commands globally only (shows on bot profile)
     try {
         const rest = new REST().setToken(config.discord.token);
         const body = commands.map(c => c.toJSON());
 
-        // Register globally (takes up to 1h to propagate)
+        // Register globally — shows on bot profile, works everywhere
         await rest.put(Routes.applicationCommands(client.user.id), { body });
 
-        // Also register per-guild for instant visibility
+        // Clear any old per-guild duplicates
         const guildIds = client.guilds.cache.map(g => g.id);
         for (const guildId of guildIds) {
             await rest.put(
                 Routes.applicationGuildCommands(client.user.id, guildId),
-                { body }
-            ).catch(err => console.warn(`[Commands] Failed for guild ${guildId}:`, err.message));
+                { body: [] }
+            ).catch(() => {});
         }
 
-        console.log(`Deployed ${commands.length} commands to ${guildIds.length} guilds + global.`);
+        console.log(`Deployed ${commands.length} commands globally, cleared guild duplicates.`);
     } catch (err) {
         console.error('Failed to deploy slash commands:', err.message);
-    }
-});
-
-// Also register commands when joining a new guild
-client.on(Events.GuildCreate, async guild => {
-    try {
-        const rest = new REST().setToken(config.discord.token);
-        const body = commands.map(c => c.toJSON());
-        await rest.put(Routes.applicationGuildCommands(client.user.id, guild.id), { body });
-        console.log(`[Commands] Registered for new guild: ${guild.name}`);
-    } catch (err) {
-        console.warn(`[Commands] Failed for new guild ${guild.name}:`, err.message);
     }
 });
 
@@ -84,6 +72,17 @@ app.get('/health', (_req, res) => res.json({ status: 'online', uptime: process.u
 app.listen(config.server.port, () => {
     console.log(`Health server on port ${config.server.port}`);
 });
+
+// ── Graceful Shutdown ──
+
+function shutdown(signal) {
+    console.log(`\n[Ultron] ${signal} received. Shutting down gracefully...`);
+    client.destroy();
+    process.exit(0);
+}
+
+process.on('SIGINT', () => shutdown('SIGINT'));
+process.on('SIGTERM', () => shutdown('SIGTERM'));
 
 // ── Login ──
 
