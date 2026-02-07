@@ -51,8 +51,9 @@ function cleanResponse(text) {
         cleaned = cleaned.replace(pattern, '');
     }
 
-    // Strip [TOOL:...] syntax that leaked through
+    // Strip [TOOL:...] and [Used tool: result] syntax that leaked through
     cleaned = cleaned.replace(/\[TOOL:\w+\(\{[\s\S]*?\}\)\]/g, '');
+    cleaned = cleaned.replace(/\[Used \w+:[^\]]*\]\s*/g, '');
 
     // Collapse excessive periods (4+) to ellipsis, preserve normal ellipses (2-3 dots)
     cleaned = cleaned.replace(/\.{4,}/g, '...').replace(/\s{2,}/g, ' ').trim();
@@ -355,18 +356,19 @@ async function generateResponse(message, userInput) {
     const contents = [];
     for (const entry of history.slice(-config.maxConversationHistory)) {
         contents.push({ role: 'user', parts: [{ text: entry.user }] });
-        // Include tool context in history so the model knows what it did last turn
-        let modelText = entry.model;
+        contents.push({ role: 'model', parts: [{ text: entry.model }] });
+        // Inject tool context as a separate exchange so the model knows what it did
+        // but doesn't learn to include [Used ...] in its own responses
         if (entry.toolContext) {
-            modelText = `${entry.toolContext}\n${modelText}`;
+            contents.push({ role: 'user', parts: [{ text: `[SYSTEM] Previous action context: ${entry.toolContext}` }] });
+            contents.push({ role: 'model', parts: [{ text: 'Acknowledged.' }] });
         }
-        contents.push({ role: 'model', parts: [{ text: modelText }] });
     }
     contents.push({ role: 'user', parts: [{ text: `[${userName}]: ${userInput}` }] });
 
     let result = null;
 
-    // Try Groq first (native function calling), fall back to Gemma (manual parsing)
+    // Try Groq first (native function calling), fall back to Gemini
     if (groq) {
         try {
             result = await generateWithGroq(systemPrompt, contents, message);
