@@ -17,9 +17,9 @@ module.exports = {
     groq: {
         apiKey: process.env.GROQ_API_KEY || '',
         models: [
-            'moonshotai/kimi-k2-instruct',  // Best quality, separate rate limit
-            'llama-3.3-70b-versatile',      // Fallback, separate rate limit
-            'meta-llama/llama-4-scout-17b-16e-instruct' // Second fallback, supports vision
+            'llama-3.3-70b-versatile',      // Primary — reliable tool calling
+            'moonshotai/kimi-k2-instruct',  // Fallback — better quality but leaks tool syntax
+            'meta-llama/llama-4-scout-17b-16e-instruct' // Third — vision capable
         ]
     },
     server: {

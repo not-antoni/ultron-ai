@@ -3,7 +3,7 @@ const Groq = require('groq-sdk');
 const config = require('../config');
 const { getSystemPrompt } = require('./persona');
 const { toolDeclarations } = require('./tools');
-const { executeTool, getUserTier } = require('./tool-executor');
+const { executeTool, getUserTier, TOOL_TIERS } = require('./tool-executor');
 const store = require('./store');
 
 const genAI = new GoogleGenerativeAI(config.gemini.apiKey);
@@ -18,6 +18,10 @@ const LEAKED_PATTERNS = [
     /\w+:\d+<\|tool_call_argument_begin\|>[^\n]*/gi,   // createChannel:2<|tool_call_argument_begin|>{"name":"skull"}
     /\{\s*"function_call"\s*:[\s\S]*?\}\s*/g,          // {"function_call": ...}
     /```(?:json)?\s*\{[\s\S]*?"(?:name|function)"[\s\S]*?\}\s*```/g, // ```json {"name":"createChannel"...}```
+    /<\|tool_calls_section_begin\|>[\s\S]*?(?:<\|tool_calls_section_end\|>|$)/gi,
+    /<\|tool_call_begin\|>[\s\S]*?(?:<\|tool_call_end\|>|$)/gi,
+    /<\|tool_call_argument_end\|>/gi,
+    /<\|im_start\|>tool_calls[\s\S]*?(?:<\|im_end\|>|$)/gi,
 ];
 
 // Patterns for chain-of-thought / reasoning leakage
@@ -103,12 +107,92 @@ function extractJSON(text, startIndex) {
     return null;
 }
 
+// ── Dynamic Tool Selection ──
+
+// Base tools always included regardless of message content
+const BASE_TOOL_NAMES = new Set([
+    'getServerInfo', 'getMemberInfo', 'readMessages', 'fetchMessage',
+    'listChannels', 'listRoles', 'saveMemory', 'getMemory', 'sendMessage'
+]);
+
+// Keyword → category mapping for dynamic selection
+const CATEGORY_KEYWORDS = {
+    channel: /\b(?:channel|thread|slow\s?mode|lock|unlock|nsfw|voice\s?limit|clone\s?channel|move\s?channel)\b/i,
+    role: /\b(?:role|assign|give\s+role|remove\s+role)\b/i,
+    moderation: /\b(?:kick|ban|unban|timeout|mute|unmute|nick(?:name)?)\b/i,
+    message: /\b(?:message|send|purge|pin|unpin|embed|reply|react|poll|dm|direct\s+message)\b/i,
+    guild: /\b(?:server\s+(?:name|icon|banner|setting)|verification|afk|notification|rename\s+server)\b/i,
+    permission: /\b(?:perm(?:ission)?|overwrite|allow|deny)\b/i,
+    document: /\b(?:document|doc|rule|guide|faq|note)\b/i,
+    memory: /\b(?:memory|remember|forget|recall|memorize)\b/i,
+    config: /\b(?:emoji|emote|sticker|webhook|invite|event|schedule|automod|welcome|goodbye|autorole|reaction\s?role)\b/i,
+};
+
+function selectToolsForMessage(userInput, userTier) {
+    const input = userInput.toLowerCase();
+
+    // Start with base tools
+    const selectedNames = new Set(BASE_TOOL_NAMES);
+
+    // Add info category always (lightweight read-only tools)
+    for (const decl of toolDeclarations) {
+        if (decl.category === 'info') selectedNames.add(decl.name);
+    }
+
+    // Match keywords to categories
+    const matchedCategories = new Set();
+    for (const [category, pattern] of Object.entries(CATEGORY_KEYWORDS)) {
+        if (pattern.test(input)) {
+            matchedCategories.add(category);
+        }
+    }
+
+    // If no specific categories matched, include all categories (fallback for ambiguous requests)
+    if (matchedCategories.size === 0) {
+        // For generic messages, include common action categories
+        matchedCategories.add('channel');
+        matchedCategories.add('role');
+        matchedCategories.add('message');
+        matchedCategories.add('moderation');
+    }
+
+    // Add tools from matched categories
+    for (const decl of toolDeclarations) {
+        if (matchedCategories.has(decl.category)) {
+            selectedNames.add(decl.name);
+        }
+    }
+
+    // Filter by user tier — remove tools they can't use
+    const filtered = toolDeclarations.filter(decl => {
+        if (!selectedNames.has(decl.name)) return false;
+        const requiredTier = TOOL_TIERS[decl.name] || 3;
+        return userTier >= requiredTier;
+    });
+
+    return filtered;
+}
+
+// ── Dynamic tool_choice Detection ──
+
+const ACTION_PATTERN = /\b(?:create|make|add|build|delete|remove|destroy|kick|ban|timeout|mute|purge|send|lock|unlock|set|assign|move|clone|rename|edit|change|update|pin|unpin|setup|configure|save|dm|clear)\b/i;
+const QUERY_PATTERN = /\b(?:what|who|when|where|how|why|list|show|tell|info|status|get|read|check|describe|count|many)\b/i;
+
+function detectToolChoice(userInput) {
+    const hasAction = ACTION_PATTERN.test(userInput);
+    const hasQuery = QUERY_PATTERN.test(userInput);
+
+    // If clear action intent and no query words, force tool use
+    if (hasAction && !hasQuery) return 'required';
+
+    // Otherwise auto
+    return 'auto';
+}
+
 // ── Groq Provider (PRIMARY — native function calling) ──
 
-function convertToolsForGroq() {
-    // SchemaType values are already lowercase ('string', 'number', etc.)
-    // which matches OpenAI tool format — pass through directly
-    return toolDeclarations.map(decl => {
+function convertToolsForGroq(declarations) {
+    return declarations.map(decl => {
         const props = {};
         if (decl.parameters?.properties) {
             for (const [key, val] of Object.entries(decl.parameters.properties)) {
@@ -133,8 +217,6 @@ function convertToolsForGroq() {
     });
 }
 
-const groqTools = convertToolsForGroq();
-
 // Track which Groq model is currently active (cycles on 429)
 let activeGroqModelIdx = 0;
 let groqResetTimer = null;
@@ -143,19 +225,22 @@ let groqResetTimer = null;
 let activeGeminiModelIdx = 0;
 
 function getGroqModel() {
-    const models = config.groq.models || [config.groq.model || 'openai/gpt-oss-120b'];
+    const models = config.groq.models || [config.groq.model || 'llama-3.3-70b-versatile'];
     return models[activeGroqModelIdx % models.length];
 }
 
-async function groqRequest(messages, useTools) {
-    const models = config.groq.models || [config.groq.model || 'openai/gpt-oss-120b'];
+async function groqRequest(messages, tools, toolChoice) {
+    const models = config.groq.models || [config.groq.model || 'llama-3.3-70b-versatile'];
 
     // Try each model until one works
     for (let i = 0; i < models.length; i++) {
         const modelIdx = (activeGroqModelIdx + i) % models.length;
         const model = models[modelIdx];
         const opts = { model, messages };
-        if (useTools) { opts.tools = groqTools; opts.tool_choice = 'auto'; }
+        if (tools && tools.length > 0) {
+            opts.tools = tools;
+            opts.tool_choice = toolChoice || 'auto';
+        }
 
         try {
             const result = await groq.chat.completions.create(opts);
@@ -195,17 +280,27 @@ async function groqRequest(messages, useTools) {
     throw Object.assign(new Error('All Groq models rate limited'), { status: 429 });
 }
 
-async function generateWithGroq(systemPrompt, contents, message) {
+async function generateWithGroq(systemPrompt, contents, message, userTier, userInput) {
     const messages = [{ role: 'system', content: systemPrompt }];
     for (const entry of contents) {
         const text = entry.parts?.[0]?.text || '';
         messages.push({ role: entry.role === 'model' ? 'assistant' : 'user', content: text });
     }
 
+    // Dynamic tool selection + tool_choice
+    const selectedTools = selectToolsForMessage(userInput, userTier);
+    const groqTools = convertToolsForGroq(selectedTools);
+    const toolChoice = detectToolChoice(userInput);
+
+    console.log(`[Ultron/Groq] ${selectedTools.length}/${toolDeclarations.length} tools, choice=${toolChoice}`);
+
     const toolLog = [];
     let rounds = 0;
+    let leakedRounds = 0;
     while (rounds <= config.maxToolRounds) {
-        const completion = await groqRequest(messages, true);
+        // After first round, always use 'auto' (the model is responding to tool results)
+        const currentChoice = rounds === 0 ? toolChoice : 'auto';
+        const completion = await groqRequest(messages, groqTools, currentChoice);
         const choice = completion.choices[0];
         const assistantMsg = choice.message;
 
@@ -217,7 +312,24 @@ async function generateWithGroq(systemPrompt, contents, message) {
         if (!hasRealToolCalls && content) {
             const leakedCalls = parseLeakedToolCalls(content);
             if (leakedCalls.length > 0) {
-                console.log(`[Ultron/Groq] Parsing ${leakedCalls.length} leaked tool call(s) from text`);
+                leakedRounds++;
+                console.log(`[Ultron/Groq] Parsing ${leakedCalls.length} leaked tool call(s) (round ${leakedRounds})`);
+
+                // After 2 consecutive leaked rounds, fall back to Gemini
+                if (leakedRounds >= 2) {
+                    console.log('[Ultron/Groq] Too many leaked rounds, falling back to Gemini');
+                    // Still execute the leaked calls before falling back
+                    for (const lc of leakedCalls) {
+                        try {
+                            const toolResult = await executeTool(lc.name, lc.args, message);
+                            toolLog.push({ tool: lc.name, args: lc.args, result: toolResult });
+                        } catch (err) {
+                            toolLog.push({ tool: lc.name, args: lc.args, result: { error: err.message } });
+                        }
+                    }
+                    return { text: null, toolLog, fallbackToGemini: true };
+                }
+
                 const results = [];
                 for (const lc of leakedCalls) {
                     console.log(`[Ultron/Groq] Tool (leaked): ${lc.name}(${JSON.stringify(lc.args)})`);
@@ -238,6 +350,9 @@ async function generateWithGroq(systemPrompt, contents, message) {
                 continue;
             }
         }
+
+        // Reset leaked counter on successful real tool calls
+        if (hasRealToolCalls) leakedRounds = 0;
 
         messages.push(assistantMsg);
 
@@ -268,7 +383,7 @@ async function generateWithGroq(systemPrompt, contents, message) {
         rounds++;
     }
 
-    const final = await groqRequest(messages, false);
+    const final = await groqRequest(messages, null, null);
     return { text: final.choices[0]?.message?.content?.trim() || null, toolLog };
 }
 
@@ -321,6 +436,19 @@ function parseLeakedToolCalls(text) {
         }
     }
 
+    // Pattern: <|tool_call_begin|>...<|tool_call_argument_begin|>{"arg":"val"}
+    if (calls.length === 0) {
+        const pattern0b = /<\|tool_call_begin\|>.*?(\w+).*?<\|tool_call_argument_begin\|>/gi;
+        for (const match of text.matchAll(pattern0b)) {
+            if (toolNames.has(match[1])) {
+                const jsonStr = extractJSON(text, match.index + match[0].length);
+                if (jsonStr) {
+                    try { calls.push({ name: match[1], args: JSON.parse(jsonStr) }); } catch (_) {}
+                }
+            }
+        }
+    }
+
     // Pattern: function=toolName>{"arg":"val"} or <function=toolName>{"arg":"val"}</function>
     if (calls.length === 0) {
         const pattern1 = /(?:<)?function=(\w+)>/gi;
@@ -352,8 +480,12 @@ function parseLeakedToolCalls(text) {
 
 // ── Gemini Provider (FALLBACK — native function calling) ──
 
-async function generateWithGemini(systemPrompt, contents, message, images = []) {
+async function generateWithGemini(systemPrompt, contents, message, images = [], userTier = 3, userInput = '') {
     const models = config.gemini.models || [config.gemini.model || 'gemini-2.0-flash'];
+
+    // Dynamic tool selection for Gemini too
+    const selectedTools = selectToolsForMessage(userInput, userTier);
+    const toolChoice = detectToolChoice(userInput);
 
     // If images present, add inlineData parts to the last user message
     if (images.length > 0) {
@@ -379,11 +511,18 @@ async function generateWithGemini(systemPrompt, contents, message, images = []) 
         const modelIdx = (activeGeminiModelIdx + i) % models.length;
         const modelName = models[modelIdx];
         try {
-            const model = genAI.getGenerativeModel({
+            const modelConfig = {
                 model: modelName,
                 systemInstruction: systemPrompt,
-                tools: [{ functionDeclarations: toolDeclarations }]
-            });
+                tools: [{ functionDeclarations: selectedTools }]
+            };
+
+            // Set tool config for Gemini based on detected choice
+            if (toolChoice === 'required') {
+                modelConfig.toolConfig = { functionCallingConfig: { mode: 'ANY' } };
+            }
+
+            const model = genAI.getGenerativeModel(modelConfig);
 
             const chat = model.startChat({ contents: contents.slice(0, -1) });
             let result = await chat.sendMessage(contents[contents.length - 1].parts);
@@ -481,7 +620,7 @@ async function generateResponse(message, userInput, images = []) {
                 // Vision: use llama-4-scout directly, no tools
                 result = await generateWithGroqVision(systemPrompt, contents, images);
             } else {
-                result = await generateWithGroq(systemPrompt, contents, message);
+                result = await generateWithGroq(systemPrompt, contents, message, userTier, userInput);
             }
             if (result?.text) console.log(`[Ultron] Response via Groq (${hasImages ? 'vision' : getGroqModel()})`);
         } catch (err) {
@@ -489,12 +628,18 @@ async function generateResponse(message, userInput, images = []) {
         }
     }
 
-    if (!result?.text) {
+    // Gemini fallback — either Groq failed or leaked too many times
+    if (!result?.text || result?.fallbackToGemini) {
+        const existingToolLog = result?.toolLog || [];
         try {
-            result = await generateWithGemini(systemPrompt, contents, message, images);
+            result = await generateWithGemini(systemPrompt, contents, message, images, userTier, userInput);
             if (result?.text) console.log('[Ultron] Response via Gemini');
+            // Merge tool logs from leaked Groq calls + Gemini calls
+            result.toolLog = [...existingToolLog, ...(result.toolLog || [])];
         } catch (err) {
             console.error('[Ultron] Gemini failed:', err.message);
+            // Preserve any tool log from Groq leaked calls
+            if (!result) result = { text: null, toolLog: existingToolLog };
         }
     }
 
@@ -540,4 +685,4 @@ async function generateResponse(message, userInput, images = []) {
     return text;
 }
 
-module.exports = { generateResponse };
+module.exports = { generateResponse, selectToolsForMessage, detectToolChoice };

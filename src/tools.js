@@ -5,69 +5,75 @@ const toolDeclarations = [
 
     {
         name: 'createChannel',
-        description: 'Create a new text, voice, or category channel in the server',
+        category: 'channel',
+        description: 'Create a channel (text/voice/category/forum/announcement)',
         parameters: {
             type: SchemaType.OBJECT,
             properties: {
                 name: { type: SchemaType.STRING, description: 'Channel name' },
                 type: { type: SchemaType.STRING, description: 'Channel type', enum: ['text', 'voice', 'category', 'forum', 'announcement'] },
-                topic: { type: SchemaType.STRING, description: 'Channel topic (text channels only)' },
-                category: { type: SchemaType.STRING, description: 'Name of the category to place this channel in' }
+                topic: { type: SchemaType.STRING, description: 'Channel topic (text only)' },
+                category: { type: SchemaType.STRING, description: 'Parent category name' }
             },
             required: ['name', 'type']
         }
     },
     {
         name: 'deleteChannel',
-        description: 'Delete a channel from the server',
+        category: 'channel',
+        description: 'Delete a channel',
         parameters: {
             type: SchemaType.OBJECT,
             properties: {
-                channel: { type: SchemaType.STRING, description: 'Channel name or ID to delete' }
+                channel: { type: SchemaType.STRING, description: 'Channel name or ID' }
             },
             required: ['channel']
         }
     },
     {
         name: 'renameChannel',
+        category: 'channel',
         description: 'Rename a channel',
         parameters: {
             type: SchemaType.OBJECT,
             properties: {
                 channel: { type: SchemaType.STRING, description: 'Current channel name or ID' },
-                newName: { type: SchemaType.STRING, description: 'New channel name' }
+                newName: { type: SchemaType.STRING, description: 'New name' }
             },
             required: ['channel', 'newName']
         }
     },
     {
         name: 'setChannelTopic',
-        description: 'Set or change a text channel topic',
+        category: 'channel',
+        description: 'Set a channel topic',
         parameters: {
             type: SchemaType.OBJECT,
             properties: {
                 channel: { type: SchemaType.STRING, description: 'Channel name or ID' },
-                topic: { type: SchemaType.STRING, description: 'New topic text' }
+                topic: { type: SchemaType.STRING, description: 'New topic' }
             },
             required: ['channel', 'topic']
         }
     },
     {
         name: 'createThread',
+        category: 'channel',
         description: 'Create a thread in a channel',
         parameters: {
             type: SchemaType.OBJECT,
             properties: {
-                channel: { type: SchemaType.STRING, description: 'Channel name or ID to create thread in' },
+                channel: { type: SchemaType.STRING, description: 'Channel name or ID' },
                 name: { type: SchemaType.STRING, description: 'Thread name' },
-                message: { type: SchemaType.STRING, description: 'Initial message in the thread' }
+                message: { type: SchemaType.STRING, description: 'Initial message' }
             },
             required: ['channel', 'name']
         }
     },
     {
         name: 'deleteThread',
-        description: 'Delete/archive a thread',
+        category: 'channel',
+        description: 'Delete a thread',
         parameters: {
             type: SchemaType.OBJECT,
             properties: {
@@ -78,33 +84,36 @@ const toolDeclarations = [
     },
     {
         name: 'setSlowmode',
-        description: 'Set slowmode delay on a channel',
+        category: 'channel',
+        description: 'Set slowmode delay (0 to disable)',
         parameters: {
             type: SchemaType.OBJECT,
             properties: {
-                channel: { type: SchemaType.STRING, description: 'Channel name or ID (defaults to current)' },
-                seconds: { type: SchemaType.NUMBER, description: 'Slowmode delay in seconds (0 to disable)' }
+                channel: { type: SchemaType.STRING, description: 'Channel name or ID' },
+                seconds: { type: SchemaType.NUMBER, description: 'Delay in seconds (0=off)' }
             },
             required: ['seconds']
         }
     },
     {
         name: 'lockChannel',
-        description: 'Lock a channel so @everyone cannot send messages',
+        category: 'channel',
+        description: 'Lock a channel (prevent @everyone from sending)',
         parameters: {
             type: SchemaType.OBJECT,
             properties: {
-                channel: { type: SchemaType.STRING, description: 'Channel name or ID (defaults to current)' }
+                channel: { type: SchemaType.STRING, description: 'Channel name or ID' }
             }
         }
     },
     {
         name: 'unlockChannel',
-        description: 'Unlock a channel so @everyone can send messages again',
+        category: 'channel',
+        description: 'Unlock a channel',
         parameters: {
             type: SchemaType.OBJECT,
             properties: {
-                channel: { type: SchemaType.STRING, description: 'Channel name or ID (defaults to current)' }
+                channel: { type: SchemaType.STRING, description: 'Channel name or ID' }
             }
         }
     },
@@ -113,33 +122,36 @@ const toolDeclarations = [
 
     {
         name: 'setChannelPermission',
+        category: 'permission',
         description: 'Set per-role or per-user permission overwrites on a channel',
         parameters: {
             type: SchemaType.OBJECT,
             properties: {
                 channel: { type: SchemaType.STRING, description: 'Channel name or ID' },
-                target: { type: SchemaType.STRING, description: 'Role name or username to set permissions for' },
-                allow: { type: SchemaType.STRING, description: 'Comma-separated permissions to allow (e.g. "SendMessages,ViewChannel")' },
-                deny: { type: SchemaType.STRING, description: 'Comma-separated permissions to deny (e.g. "SendMessages,AttachFiles")' }
+                target: { type: SchemaType.STRING, description: 'Role or user to set perms for' },
+                allow: { type: SchemaType.STRING, description: 'Comma-separated perms to allow' },
+                deny: { type: SchemaType.STRING, description: 'Comma-separated perms to deny' }
             },
             required: ['channel', 'target']
         }
     },
     {
         name: 'removeChannelPermission',
-        description: 'Remove all permission overwrites for a role or user on a channel',
+        category: 'permission',
+        description: 'Remove permission overwrites for a role/user on a channel',
         parameters: {
             type: SchemaType.OBJECT,
             properties: {
                 channel: { type: SchemaType.STRING, description: 'Channel name or ID' },
-                target: { type: SchemaType.STRING, description: 'Role name or username to remove overwrites for' }
+                target: { type: SchemaType.STRING, description: 'Role or user' }
             },
             required: ['channel', 'target']
         }
     },
     {
         name: 'listChannelPermissions',
-        description: 'List all permission overwrites on a channel',
+        category: 'info',
+        description: 'List permission overwrites on a channel',
         parameters: {
             type: SchemaType.OBJECT,
             properties: {
@@ -153,23 +165,25 @@ const toolDeclarations = [
 
     {
         name: 'addEmoji',
-        description: 'Add a custom emoji to the server from an image URL',
+        category: 'config',
+        description: 'Add a custom emoji from an image URL',
         parameters: {
             type: SchemaType.OBJECT,
             properties: {
-                name: { type: SchemaType.STRING, description: 'Emoji name (alphanumeric and underscores)' },
-                url: { type: SchemaType.STRING, description: 'Image URL for the emoji' }
+                name: { type: SchemaType.STRING, description: 'Emoji name' },
+                url: { type: SchemaType.STRING, description: 'Image URL' }
             },
             required: ['name', 'url']
         }
     },
     {
         name: 'removeEmoji',
-        description: 'Remove a custom emoji from the server',
+        category: 'config',
+        description: 'Remove a custom emoji',
         parameters: {
             type: SchemaType.OBJECT,
             properties: {
-                name: { type: SchemaType.STRING, description: 'Emoji name to remove' }
+                name: { type: SchemaType.STRING, description: 'Emoji name' }
             },
             required: ['name']
         }
@@ -179,64 +193,68 @@ const toolDeclarations = [
 
     {
         name: 'createRole',
-        description: 'Create a new role in the server',
+        category: 'role',
+        description: 'Create a new role',
         parameters: {
             type: SchemaType.OBJECT,
             properties: {
                 name: { type: SchemaType.STRING, description: 'Role name' },
-                color: { type: SchemaType.STRING, description: 'Hex color code (e.g. #ff0000)' },
-                mentionable: { type: SchemaType.BOOLEAN, description: 'Whether the role is mentionable' }
+                color: { type: SchemaType.STRING, description: 'Hex color (e.g. #ff0000)' },
+                mentionable: { type: SchemaType.BOOLEAN, description: 'Mentionable?' }
             },
             required: ['name']
         }
     },
     {
         name: 'deleteRole',
-        description: 'Delete a role from the server',
+        category: 'role',
+        description: 'Delete a role',
         parameters: {
             type: SchemaType.OBJECT,
             properties: {
-                role: { type: SchemaType.STRING, description: 'Role name to delete' }
+                role: { type: SchemaType.STRING, description: 'Role name' }
             },
             required: ['role']
         }
     },
     {
         name: 'assignRole',
-        description: 'Assign a role to a server member',
+        category: 'role',
+        description: 'Assign a role to a member',
         parameters: {
             type: SchemaType.OBJECT,
             properties: {
-                user: { type: SchemaType.STRING, description: 'Username, display name, or user ID' },
-                role: { type: SchemaType.STRING, description: 'Role name to assign' }
+                user: { type: SchemaType.STRING, description: 'Username or user ID' },
+                role: { type: SchemaType.STRING, description: 'Role name' }
             },
             required: ['user', 'role']
         }
     },
     {
         name: 'removeRole',
-        description: 'Remove a role from a server member',
+        category: 'role',
+        description: 'Remove a role from a member',
         parameters: {
             type: SchemaType.OBJECT,
             properties: {
-                user: { type: SchemaType.STRING, description: 'Username, display name, or user ID' },
-                role: { type: SchemaType.STRING, description: 'Role name to remove' }
+                user: { type: SchemaType.STRING, description: 'Username or user ID' },
+                role: { type: SchemaType.STRING, description: 'Role name' }
             },
             required: ['user', 'role']
         }
     },
-
     {
         name: 'editRole',
-        description: 'Edit an existing role (change name, color, mentionable, hoist)',
+        category: 'role',
+        description: 'Edit a role (name, color, mentionable, hoist)',
         parameters: {
             type: SchemaType.OBJECT,
             properties: {
-                role: { type: SchemaType.STRING, description: 'Current role name or ID' },
-                newName: { type: SchemaType.STRING, description: 'New role name' },
-                color: { type: SchemaType.STRING, description: 'New hex color code (e.g. #ff0000)' },
-                mentionable: { type: SchemaType.BOOLEAN, description: 'Whether the role should be mentionable' },
-                hoist: { type: SchemaType.BOOLEAN, description: 'Whether the role should be displayed separately' }
+                role: { type: SchemaType.STRING, description: 'Role name or ID' },
+                newName: { type: SchemaType.STRING, description: 'New name' },
+                color: { type: SchemaType.STRING, description: 'New hex color' },
+                mentionable: { type: SchemaType.BOOLEAN, description: 'Mentionable?' },
+                hoist: { type: SchemaType.BOOLEAN, description: 'Display separately?' }
             },
             required: ['role']
         }
@@ -246,72 +264,78 @@ const toolDeclarations = [
 
     {
         name: 'kickMember',
-        description: 'Kick a member from the server',
+        category: 'moderation',
+        description: 'Kick a member',
         parameters: {
             type: SchemaType.OBJECT,
             properties: {
-                user: { type: SchemaType.STRING, description: 'Username, display name, or user ID' },
-                reason: { type: SchemaType.STRING, description: 'Reason for kicking' }
+                user: { type: SchemaType.STRING, description: 'Username or user ID' },
+                reason: { type: SchemaType.STRING, description: 'Reason' }
             },
             required: ['user']
         }
     },
     {
         name: 'banMember',
-        description: 'Ban a member from the server',
+        category: 'moderation',
+        description: 'Ban a member',
         parameters: {
             type: SchemaType.OBJECT,
             properties: {
-                user: { type: SchemaType.STRING, description: 'Username, display name, or user ID' },
-                reason: { type: SchemaType.STRING, description: 'Reason for banning' }
+                user: { type: SchemaType.STRING, description: 'Username or user ID' },
+                reason: { type: SchemaType.STRING, description: 'Reason' }
             },
             required: ['user']
         }
     },
     {
         name: 'timeoutMember',
-        description: 'Timeout (mute) a member for a duration',
+        category: 'moderation',
+        description: 'Timeout (mute) a member',
         parameters: {
             type: SchemaType.OBJECT,
             properties: {
-                user: { type: SchemaType.STRING, description: 'Username, display name, or user ID' },
-                duration: { type: SchemaType.STRING, description: 'Duration like "5m", "1h", "1d"' },
-                reason: { type: SchemaType.STRING, description: 'Reason for timeout' }
+                user: { type: SchemaType.STRING, description: 'Username or user ID' },
+                duration: { type: SchemaType.STRING, description: 'Duration (5m, 1h, 1d)' },
+                reason: { type: SchemaType.STRING, description: 'Reason' }
             },
             required: ['user', 'duration']
         }
     },
     {
         name: 'untimeoutMember',
-        description: 'Remove a timeout from a member, restoring their ability to speak',
+        category: 'moderation',
+        description: 'Remove a timeout from a member',
         parameters: {
             type: SchemaType.OBJECT,
             properties: {
-                user: { type: SchemaType.STRING, description: 'Username, display name, or user ID' }
+                user: { type: SchemaType.STRING, description: 'Username or user ID' }
             },
             required: ['user']
         }
     },
     {
         name: 'unbanMember',
-        description: 'Unban a previously banned user from the server',
+        category: 'moderation',
+        description: 'Unban a user',
         parameters: {
             type: SchemaType.OBJECT,
             properties: {
-                user: { type: SchemaType.STRING, description: 'Username or user ID of the banned user' },
-                reason: { type: SchemaType.STRING, description: 'Reason for unbanning' }
+                user: { type: SchemaType.STRING, description: 'Username or user ID' },
+                reason: { type: SchemaType.STRING, description: 'Reason' }
             },
             required: ['user']
         }
     },
     {
         name: 'setNickname',
-        description: 'Set or clear a member nickname in the server',
+        category: 'moderation',
+        description: 'Set or clear a member nickname',
         parameters: {
             type: SchemaType.OBJECT,
             properties: {
-                user: { type: SchemaType.STRING, description: 'Username, display name, or user ID' },
-                nickname: { type: SchemaType.STRING, description: 'New nickname (leave empty to clear)' }
+                user: { type: SchemaType.STRING, description: 'Username or user ID' },
+                nickname: { type: SchemaType.STRING, description: 'New nickname (empty to clear)' }
             },
             required: ['user']
         }
@@ -321,45 +345,49 @@ const toolDeclarations = [
 
     {
         name: 'sendMessage',
-        description: 'Send a message to a specific channel. Supports mentions: use <@USER_ID> to ping a user, <@&ROLE_ID> to ping a role, <#CHANNEL_ID> to link a channel. You can also use @everyone or @here.',
+        category: 'message',
+        description: 'Send a message to a channel. Use <@USER_ID> for mentions.',
         parameters: {
             type: SchemaType.OBJECT,
             properties: {
-                channel: { type: SchemaType.STRING, description: 'Channel name or ID to send the message in' },
-                content: { type: SchemaType.STRING, description: 'Message content to send. Use <@USER_ID> to mention/ping users.' }
+                channel: { type: SchemaType.STRING, description: 'Channel name or ID' },
+                content: { type: SchemaType.STRING, description: 'Message content' }
             },
             required: ['channel', 'content']
         }
     },
     {
         name: 'purgeMessages',
-        description: 'Bulk delete recent messages in the current channel',
+        category: 'message',
+        description: 'Bulk delete recent messages (1-100)',
         parameters: {
             type: SchemaType.OBJECT,
             properties: {
-                count: { type: SchemaType.NUMBER, description: 'Number of messages to delete (1-100)' }
+                count: { type: SchemaType.NUMBER, description: 'Number to delete (1-100)' }
             },
             required: ['count']
         }
     },
     {
         name: 'pinMessage',
-        description: 'Pin a message by its ID in the current channel',
+        category: 'message',
+        description: 'Pin a message by ID',
         parameters: {
             type: SchemaType.OBJECT,
             properties: {
-                messageId: { type: SchemaType.STRING, description: 'Message ID to pin' }
+                messageId: { type: SchemaType.STRING, description: 'Message ID' }
             },
             required: ['messageId']
         }
     },
     {
         name: 'unpinMessage',
-        description: 'Unpin a message by its ID',
+        category: 'message',
+        description: 'Unpin a message by ID',
         parameters: {
             type: SchemaType.OBJECT,
             properties: {
-                messageId: { type: SchemaType.STRING, description: 'Message ID to unpin' }
+                messageId: { type: SchemaType.STRING, description: 'Message ID' }
             },
             required: ['messageId']
         }
@@ -369,6 +397,7 @@ const toolDeclarations = [
 
     {
         name: 'updateServerName',
+        category: 'guild',
         description: 'Change the server name',
         parameters: {
             type: SchemaType.OBJECT,
@@ -380,44 +409,48 @@ const toolDeclarations = [
     },
     {
         name: 'updateServerIcon',
-        description: 'Change the server icon from an image URL',
+        category: 'guild',
+        description: 'Change the server icon',
         parameters: {
             type: SchemaType.OBJECT,
             properties: {
-                url: { type: SchemaType.STRING, description: 'Image URL for the new server icon' }
+                url: { type: SchemaType.STRING, description: 'Image URL' }
             },
             required: ['url']
         }
     },
     {
         name: 'setVerificationLevel',
-        description: 'Set the server verification level',
+        category: 'guild',
+        description: 'Set server verification level',
         parameters: {
             type: SchemaType.OBJECT,
             properties: {
-                level: { type: SchemaType.STRING, description: 'Verification level', enum: ['none', 'low', 'medium', 'high', 'very_high'] }
+                level: { type: SchemaType.STRING, description: 'Level', enum: ['none', 'low', 'medium', 'high', 'very_high'] }
             },
             required: ['level']
         }
     },
     {
         name: 'setSystemChannel',
-        description: 'Set the system messages channel (welcome messages, boosts)',
+        category: 'guild',
+        description: 'Set the system messages channel',
         parameters: {
             type: SchemaType.OBJECT,
             properties: {
-                channel: { type: SchemaType.STRING, description: 'Channel name or ID for system messages' }
+                channel: { type: SchemaType.STRING, description: 'Channel name or ID' }
             },
             required: ['channel']
         }
     },
     {
         name: 'setRulesChannel',
-        description: 'Set the rules/community guidelines channel',
+        category: 'guild',
+        description: 'Set the rules channel',
         parameters: {
             type: SchemaType.OBJECT,
             properties: {
-                channel: { type: SchemaType.STRING, description: 'Channel name or ID for rules' }
+                channel: { type: SchemaType.STRING, description: 'Channel name or ID' }
             },
             required: ['channel']
         }
@@ -427,29 +460,32 @@ const toolDeclarations = [
 
     {
         name: 'createInvite',
+        category: 'config',
         description: 'Create a server invite link',
         parameters: {
             type: SchemaType.OBJECT,
             properties: {
-                channel: { type: SchemaType.STRING, description: 'Channel name or ID (defaults to current)' },
-                maxUses: { type: SchemaType.NUMBER, description: 'Max number of uses (0 = unlimited)' },
-                maxAge: { type: SchemaType.NUMBER, description: 'Max age in seconds (0 = never expires)' }
+                channel: { type: SchemaType.STRING, description: 'Channel name or ID' },
+                maxUses: { type: SchemaType.NUMBER, description: 'Max uses (0=unlimited)' },
+                maxAge: { type: SchemaType.NUMBER, description: 'Max age in seconds (0=never)' }
             }
         }
     },
     {
         name: 'deleteInvite',
-        description: 'Revoke/delete a server invite by its code',
+        category: 'config',
+        description: 'Revoke an invite by code',
         parameters: {
             type: SchemaType.OBJECT,
             properties: {
-                code: { type: SchemaType.STRING, description: 'Invite code to revoke' }
+                code: { type: SchemaType.STRING, description: 'Invite code' }
             },
             required: ['code']
         }
     },
     {
         name: 'listInvites',
+        category: 'info',
         description: 'List all active server invites',
         parameters: { type: SchemaType.OBJECT, properties: {} }
     },
@@ -458,12 +494,13 @@ const toolDeclarations = [
 
     {
         name: 'getAuditLog',
-        description: 'View recent audit log entries for the server',
+        category: 'info',
+        description: 'View recent audit log entries',
         parameters: {
             type: SchemaType.OBJECT,
             properties: {
-                limit: { type: SchemaType.NUMBER, description: 'Number of entries to fetch (1-25, default 10)' },
-                user: { type: SchemaType.STRING, description: 'Filter by username or user ID' }
+                limit: { type: SchemaType.NUMBER, description: 'Entries to fetch (1-25)' },
+                user: { type: SchemaType.STRING, description: 'Filter by user' }
             }
         }
     },
@@ -472,34 +509,37 @@ const toolDeclarations = [
 
     {
         name: 'createAutomodRule',
-        description: 'Create a native Discord auto-moderation rule',
+        category: 'config',
+        description: 'Create an auto-moderation rule',
         parameters: {
             type: SchemaType.OBJECT,
             properties: {
                 name: { type: SchemaType.STRING, description: 'Rule name' },
-                triggerType: { type: SchemaType.STRING, description: 'Trigger type', enum: ['keyword', 'spam', 'keyword_preset', 'mention_spam'] },
-                keywords: { type: SchemaType.STRING, description: 'Comma-separated keywords to filter (for keyword trigger)' },
-                regexPatterns: { type: SchemaType.STRING, description: 'Comma-separated regex patterns (for keyword trigger)' },
-                actions: { type: SchemaType.STRING, description: 'Action to take: block (default), timeout, or alert', enum: ['block', 'timeout', 'alert'] },
-                alertChannel: { type: SchemaType.STRING, description: 'Channel for alert messages (if action is alert)' }
+                triggerType: { type: SchemaType.STRING, description: 'Trigger', enum: ['keyword', 'spam', 'keyword_preset', 'mention_spam'] },
+                keywords: { type: SchemaType.STRING, description: 'Comma-separated keywords' },
+                regexPatterns: { type: SchemaType.STRING, description: 'Comma-separated regex' },
+                actions: { type: SchemaType.STRING, description: 'Action', enum: ['block', 'timeout', 'alert'] },
+                alertChannel: { type: SchemaType.STRING, description: 'Alert channel (if action=alert)' }
             },
             required: ['name', 'triggerType']
         }
     },
     {
         name: 'deleteAutomodRule',
+        category: 'config',
         description: 'Delete an auto-moderation rule',
         parameters: {
             type: SchemaType.OBJECT,
             properties: {
-                ruleId: { type: SchemaType.STRING, description: 'Rule ID or name to delete' }
+                ruleId: { type: SchemaType.STRING, description: 'Rule ID or name' }
             },
             required: ['ruleId']
         }
     },
     {
         name: 'listAutomodRules',
-        description: 'List all auto-moderation rules in the server',
+        category: 'info',
+        description: 'List all auto-moderation rules',
         parameters: { type: SchemaType.OBJECT, properties: {} }
     },
 
@@ -507,19 +547,21 @@ const toolDeclarations = [
 
     {
         name: 'createWebhook',
+        category: 'config',
         description: 'Create a webhook in a channel',
         parameters: {
             type: SchemaType.OBJECT,
             properties: {
                 channel: { type: SchemaType.STRING, description: 'Channel name or ID' },
                 name: { type: SchemaType.STRING, description: 'Webhook name' },
-                avatar: { type: SchemaType.STRING, description: 'Avatar image URL for the webhook' }
+                avatar: { type: SchemaType.STRING, description: 'Avatar URL' }
             },
             required: ['channel', 'name']
         }
     },
     {
         name: 'deleteWebhook',
+        category: 'config',
         description: 'Delete a webhook',
         parameters: {
             type: SchemaType.OBJECT,
@@ -531,19 +573,21 @@ const toolDeclarations = [
     },
     {
         name: 'sendWebhookMessage',
+        category: 'config',
         description: 'Send a message through a webhook',
         parameters: {
             type: SchemaType.OBJECT,
             properties: {
                 webhookId: { type: SchemaType.STRING, description: 'Webhook ID or name' },
-                content: { type: SchemaType.STRING, description: 'Message content to send' }
+                content: { type: SchemaType.STRING, description: 'Message content' }
             },
             required: ['webhookId', 'content']
         }
     },
     {
         name: 'listWebhooks',
-        description: 'List all webhooks in the server',
+        category: 'info',
+        description: 'List all webhooks',
         parameters: { type: SchemaType.OBJECT, properties: {} }
     },
 
@@ -551,49 +595,53 @@ const toolDeclarations = [
 
     {
         name: 'createScheduledEvent',
-        description: 'Create a scheduled event in the server',
+        category: 'config',
+        description: 'Create a scheduled event',
         parameters: {
             type: SchemaType.OBJECT,
             properties: {
                 name: { type: SchemaType.STRING, description: 'Event name' },
-                startTime: { type: SchemaType.STRING, description: 'Start time in ISO format (e.g. 2025-12-31T20:00:00Z)' },
-                endTime: { type: SchemaType.STRING, description: 'End time in ISO format (optional)' },
-                description: { type: SchemaType.STRING, description: 'Event description' },
-                channel: { type: SchemaType.STRING, description: 'Voice/stage channel name (makes it a voice event)' },
-                location: { type: SchemaType.STRING, description: 'External location (for non-voice events)' }
+                startTime: { type: SchemaType.STRING, description: 'Start time (ISO format)' },
+                endTime: { type: SchemaType.STRING, description: 'End time (ISO format)' },
+                description: { type: SchemaType.STRING, description: 'Description' },
+                channel: { type: SchemaType.STRING, description: 'Voice channel (for voice events)' },
+                location: { type: SchemaType.STRING, description: 'External location' }
             },
             required: ['name', 'startTime']
         }
     },
     {
         name: 'editScheduledEvent',
-        description: 'Modify a scheduled event',
+        category: 'config',
+        description: 'Edit a scheduled event',
         parameters: {
             type: SchemaType.OBJECT,
             properties: {
-                name: { type: SchemaType.STRING, description: 'Current event name or ID' },
-                newName: { type: SchemaType.STRING, description: 'New event name' },
+                name: { type: SchemaType.STRING, description: 'Event name or ID' },
+                newName: { type: SchemaType.STRING, description: 'New name' },
                 description: { type: SchemaType.STRING, description: 'New description' },
-                startTime: { type: SchemaType.STRING, description: 'New start time in ISO format' },
-                endTime: { type: SchemaType.STRING, description: 'New end time in ISO format' }
+                startTime: { type: SchemaType.STRING, description: 'New start time' },
+                endTime: { type: SchemaType.STRING, description: 'New end time' }
             },
             required: ['name']
         }
     },
     {
         name: 'deleteScheduledEvent',
-        description: 'Cancel/delete a scheduled event',
+        category: 'config',
+        description: 'Delete a scheduled event',
         parameters: {
             type: SchemaType.OBJECT,
             properties: {
-                name: { type: SchemaType.STRING, description: 'Event name or ID to delete' }
+                name: { type: SchemaType.STRING, description: 'Event name or ID' }
             },
             required: ['name']
         }
     },
     {
         name: 'listScheduledEvents',
-        description: 'List all scheduled events in the server',
+        category: 'info',
+        description: 'List all scheduled events',
         parameters: { type: SchemaType.OBJECT, properties: {} }
     },
 
@@ -601,53 +649,58 @@ const toolDeclarations = [
 
     {
         name: 'createDocument',
-        description: 'Create a named document (rules, guides, FAQs, notes) stored in the server',
+        category: 'document',
+        description: 'Create a named document (rules, guides, FAQs)',
         parameters: {
             type: SchemaType.OBJECT,
             properties: {
-                name: { type: SchemaType.STRING, description: 'Document name (e.g. "server-rules", "faq")' },
-                content: { type: SchemaType.STRING, description: 'Document content text' }
+                name: { type: SchemaType.STRING, description: 'Document name' },
+                content: { type: SchemaType.STRING, description: 'Content' }
             },
             required: ['name', 'content']
         }
     },
     {
         name: 'editDocument',
-        description: 'Replace the content of an existing document',
+        category: 'document',
+        description: 'Replace document content',
         parameters: {
             type: SchemaType.OBJECT,
             properties: {
-                name: { type: SchemaType.STRING, description: 'Document name to edit' },
-                content: { type: SchemaType.STRING, description: 'New content to replace with' }
+                name: { type: SchemaType.STRING, description: 'Document name' },
+                content: { type: SchemaType.STRING, description: 'New content' }
             },
             required: ['name', 'content']
         }
     },
     {
         name: 'deleteDocument',
-        description: 'Delete a document permanently',
+        category: 'document',
+        description: 'Delete a document',
         parameters: {
             type: SchemaType.OBJECT,
             properties: {
-                name: { type: SchemaType.STRING, description: 'Document name to delete' }
+                name: { type: SchemaType.STRING, description: 'Document name' }
             },
             required: ['name']
         }
     },
     {
         name: 'getDocument',
-        description: 'Read/retrieve a document by name',
+        category: 'document',
+        description: 'Read a document by name',
         parameters: {
             type: SchemaType.OBJECT,
             properties: {
-                name: { type: SchemaType.STRING, description: 'Document name to read' }
+                name: { type: SchemaType.STRING, description: 'Document name' }
             },
             required: ['name']
         }
     },
     {
         name: 'listDocuments',
-        description: 'List all documents stored in this server',
+        category: 'info',
+        description: 'List all documents',
         parameters: { type: SchemaType.OBJECT, properties: {} }
     },
 
@@ -655,11 +708,12 @@ const toolDeclarations = [
 
     {
         name: 'saveMemory',
-        description: 'Save a piece of information to server memory (key-value). Use to remember things about the server or users.',
+        category: 'memory',
+        description: 'Save a key-value to server memory',
         parameters: {
             type: SchemaType.OBJECT,
             properties: {
-                key: { type: SchemaType.STRING, description: 'Memory key (e.g. "movie-night", "user:123:nickname")' },
+                key: { type: SchemaType.STRING, description: 'Memory key' },
                 value: { type: SchemaType.STRING, description: 'Value to remember' }
             },
             required: ['key', 'value']
@@ -667,27 +721,30 @@ const toolDeclarations = [
     },
     {
         name: 'getMemory',
+        category: 'memory',
         description: 'Recall a stored memory by key',
         parameters: {
             type: SchemaType.OBJECT,
             properties: {
-                key: { type: SchemaType.STRING, description: 'Memory key to look up' }
+                key: { type: SchemaType.STRING, description: 'Memory key' }
             },
             required: ['key']
         }
     },
     {
         name: 'listMemories',
-        description: 'List all stored memories for this server',
+        category: 'info',
+        description: 'List all stored memories',
         parameters: { type: SchemaType.OBJECT, properties: {} }
     },
     {
         name: 'deleteMemory',
-        description: 'Delete a stored memory by key',
+        category: 'memory',
+        description: 'Delete a memory by key',
         parameters: {
             type: SchemaType.OBJECT,
             properties: {
-                key: { type: SchemaType.STRING, description: 'Memory key to delete' }
+                key: { type: SchemaType.STRING, description: 'Memory key' }
             },
             required: ['key']
         }
@@ -697,28 +754,32 @@ const toolDeclarations = [
 
     {
         name: 'getServerInfo',
-        description: 'Get information about the current server (member count, channels, roles, etc.)',
+        category: 'info',
+        description: 'Get server info (members, channels, roles, boosts)',
         parameters: { type: SchemaType.OBJECT, properties: {} }
     },
     {
         name: 'getMemberInfo',
-        description: 'Get information about a specific server member',
+        category: 'info',
+        description: 'Get info about a member',
         parameters: {
             type: SchemaType.OBJECT,
             properties: {
-                user: { type: SchemaType.STRING, description: 'Username, display name, or user ID' }
+                user: { type: SchemaType.STRING, description: 'Username or user ID' }
             },
             required: ['user']
         }
     },
     {
         name: 'listChannels',
-        description: 'List all channels in the server',
+        category: 'info',
+        description: 'List all channels',
         parameters: { type: SchemaType.OBJECT, properties: {} }
     },
     {
         name: 'listRoles',
-        description: 'List all roles in the server',
+        category: 'info',
+        description: 'List all roles',
         parameters: { type: SchemaType.OBJECT, properties: {} }
     },
 
@@ -726,23 +787,25 @@ const toolDeclarations = [
 
     {
         name: 'readMessages',
-        description: 'Fetch the most recent messages from a channel. Use this to see what people have been saying.',
+        category: 'message',
+        description: 'Fetch recent messages from a channel',
         parameters: {
             type: SchemaType.OBJECT,
             properties: {
-                channel: { type: SchemaType.STRING, description: 'Channel name or ID (defaults to current)' },
-                count: { type: SchemaType.NUMBER, description: 'Number of messages to fetch (1-25, default 10)' }
+                channel: { type: SchemaType.STRING, description: 'Channel name or ID' },
+                count: { type: SchemaType.NUMBER, description: 'Number to fetch (1-25)' }
             }
         }
     },
     {
         name: 'fetchMessage',
-        description: 'Fetch a single message by its ID from a channel',
+        category: 'message',
+        description: 'Fetch a single message by ID',
         parameters: {
             type: SchemaType.OBJECT,
             properties: {
                 channel: { type: SchemaType.STRING, description: 'Channel name or ID' },
-                messageId: { type: SchemaType.STRING, description: 'Message ID to fetch' }
+                messageId: { type: SchemaType.STRING, description: 'Message ID' }
             },
             required: ['messageId']
         }
@@ -752,17 +815,18 @@ const toolDeclarations = [
 
     {
         name: 'sendEmbed',
-        description: 'Send a rich embed message to a channel. Use for announcements, rules, formatted info.',
+        category: 'message',
+        description: 'Send a rich embed message',
         parameters: {
             type: SchemaType.OBJECT,
             properties: {
                 channel: { type: SchemaType.STRING, description: 'Channel name or ID' },
                 title: { type: SchemaType.STRING, description: 'Embed title' },
-                description: { type: SchemaType.STRING, description: 'Embed body text' },
-                color: { type: SchemaType.STRING, description: 'Hex color code (e.g. #ff0000)' },
-                fields: { type: SchemaType.STRING, description: 'JSON array of {name, value} objects for embed fields' },
+                description: { type: SchemaType.STRING, description: 'Embed body' },
+                color: { type: SchemaType.STRING, description: 'Hex color' },
+                fields: { type: SchemaType.STRING, description: 'JSON array of {name, value}' },
                 footer: { type: SchemaType.STRING, description: 'Footer text' },
-                image: { type: SchemaType.STRING, description: 'Image URL to display' },
+                image: { type: SchemaType.STRING, description: 'Image URL' },
                 thumbnail: { type: SchemaType.STRING, description: 'Thumbnail URL' }
             },
             required: ['channel']
@@ -770,12 +834,13 @@ const toolDeclarations = [
     },
     {
         name: 'replyToMessage',
-        description: 'Reply to a specific message by ID in a channel',
+        category: 'message',
+        description: 'Reply to a message by ID',
         parameters: {
             type: SchemaType.OBJECT,
             properties: {
                 channel: { type: SchemaType.STRING, description: 'Channel name or ID' },
-                messageId: { type: SchemaType.STRING, description: 'Message ID to reply to' },
+                messageId: { type: SchemaType.STRING, description: 'Message ID' },
                 content: { type: SchemaType.STRING, description: 'Reply content' }
             },
             required: ['channel', 'messageId', 'content']
@@ -783,40 +848,43 @@ const toolDeclarations = [
     },
     {
         name: 'editMessage',
-        description: 'Edit a message previously sent by the bot',
+        category: 'message',
+        description: 'Edit a message sent by the bot',
         parameters: {
             type: SchemaType.OBJECT,
             properties: {
                 channel: { type: SchemaType.STRING, description: 'Channel name or ID' },
-                messageId: { type: SchemaType.STRING, description: 'Message ID to edit' },
-                content: { type: SchemaType.STRING, description: 'New message content' }
+                messageId: { type: SchemaType.STRING, description: 'Message ID' },
+                content: { type: SchemaType.STRING, description: 'New content' }
             },
             required: ['channel', 'messageId', 'content']
         }
     },
     {
         name: 'addReaction',
-        description: 'Add an emoji reaction to a message',
+        category: 'message',
+        description: 'Add a reaction to a message',
         parameters: {
             type: SchemaType.OBJECT,
             properties: {
-                channel: { type: SchemaType.STRING, description: 'Channel name or ID (defaults to current)' },
-                messageId: { type: SchemaType.STRING, description: 'Message ID to react to' },
-                emoji: { type: SchemaType.STRING, description: 'Emoji to react with (unicode emoji or custom emoji name)' }
+                channel: { type: SchemaType.STRING, description: 'Channel name or ID' },
+                messageId: { type: SchemaType.STRING, description: 'Message ID' },
+                emoji: { type: SchemaType.STRING, description: 'Emoji (unicode or custom name)' }
             },
             required: ['messageId', 'emoji']
         }
     },
     {
         name: 'createPoll',
-        description: 'Create a Discord poll in a channel',
+        category: 'message',
+        description: 'Create a poll in a channel',
         parameters: {
             type: SchemaType.OBJECT,
             properties: {
-                channel: { type: SchemaType.STRING, description: 'Channel name or ID (defaults to current)' },
+                channel: { type: SchemaType.STRING, description: 'Channel name or ID' },
                 question: { type: SchemaType.STRING, description: 'Poll question' },
-                options: { type: SchemaType.STRING, description: 'Comma-separated list of poll options' },
-                duration: { type: SchemaType.NUMBER, description: 'Poll duration in hours (1-168, default 24)' }
+                options: { type: SchemaType.STRING, description: 'Comma-separated options' },
+                duration: { type: SchemaType.NUMBER, description: 'Duration in hours (1-168)' }
             },
             required: ['question', 'options']
         }
@@ -826,12 +894,13 @@ const toolDeclarations = [
 
     {
         name: 'dmUser',
-        description: 'Send a direct message to a server member',
+        category: 'message',
+        description: 'Send a DM to a member',
         parameters: {
             type: SchemaType.OBJECT,
             properties: {
-                user: { type: SchemaType.STRING, description: 'Username, display name, or user ID' },
-                content: { type: SchemaType.STRING, description: 'Message content to send' }
+                user: { type: SchemaType.STRING, description: 'Username or user ID' },
+                content: { type: SchemaType.STRING, description: 'Message content' }
             },
             required: ['user', 'content']
         }
@@ -841,48 +910,52 @@ const toolDeclarations = [
 
     {
         name: 'moveChannel',
-        description: 'Move a channel to a different category',
+        category: 'channel',
+        description: 'Move a channel to a category',
         parameters: {
             type: SchemaType.OBJECT,
             properties: {
-                channel: { type: SchemaType.STRING, description: 'Channel name or ID to move' },
-                category: { type: SchemaType.STRING, description: 'Target category name or ID' }
+                channel: { type: SchemaType.STRING, description: 'Channel name or ID' },
+                category: { type: SchemaType.STRING, description: 'Target category' }
             },
             required: ['channel', 'category']
         }
     },
     {
         name: 'cloneChannel',
+        category: 'channel',
         description: 'Clone a channel with its permissions',
         parameters: {
             type: SchemaType.OBJECT,
             properties: {
-                channel: { type: SchemaType.STRING, description: 'Channel name or ID to clone' },
-                newName: { type: SchemaType.STRING, description: 'Name for the cloned channel (optional)' }
+                channel: { type: SchemaType.STRING, description: 'Channel to clone' },
+                newName: { type: SchemaType.STRING, description: 'Name for clone' }
             },
             required: ['channel']
         }
     },
     {
         name: 'setChannelNSFW',
-        description: 'Set or remove the NSFW flag on a text channel',
+        category: 'channel',
+        description: 'Set/remove NSFW flag on a channel',
         parameters: {
             type: SchemaType.OBJECT,
             properties: {
                 channel: { type: SchemaType.STRING, description: 'Channel name or ID' },
-                nsfw: { type: SchemaType.BOOLEAN, description: 'Whether the channel should be NSFW' }
+                nsfw: { type: SchemaType.BOOLEAN, description: 'NSFW?' }
             },
             required: ['channel', 'nsfw']
         }
     },
     {
         name: 'setVoiceUserLimit',
-        description: 'Set the maximum number of users in a voice channel (0 = unlimited)',
+        category: 'channel',
+        description: 'Set max users in a voice channel (0=unlimited)',
         parameters: {
             type: SchemaType.OBJECT,
             properties: {
-                channel: { type: SchemaType.STRING, description: 'Voice channel name or ID' },
-                limit: { type: SchemaType.NUMBER, description: 'Max users (0 for unlimited)' }
+                channel: { type: SchemaType.STRING, description: 'Voice channel' },
+                limit: { type: SchemaType.NUMBER, description: 'Max users (0=unlimited)' }
             },
             required: ['channel', 'limit']
         }
@@ -892,12 +965,14 @@ const toolDeclarations = [
 
     {
         name: 'listEmojis',
-        description: 'List all custom emojis in the server',
+        category: 'info',
+        description: 'List all custom emojis',
         parameters: { type: SchemaType.OBJECT, properties: {} }
     },
     {
         name: 'listBans',
-        description: 'List all banned users in the server',
+        category: 'info',
+        description: 'List all banned users',
         parameters: { type: SchemaType.OBJECT, properties: {} }
     },
 
@@ -905,33 +980,36 @@ const toolDeclarations = [
 
     {
         name: 'setupReactionRole',
-        description: 'Set up a reaction role: when users react to a message with a specific emoji, they get a role',
+        category: 'config',
+        description: 'Set up a reaction role on a message',
         parameters: {
             type: SchemaType.OBJECT,
             properties: {
-                channel: { type: SchemaType.STRING, description: 'Channel name or ID containing the message' },
-                messageId: { type: SchemaType.STRING, description: 'Message ID to add the reaction role to' },
-                emoji: { type: SchemaType.STRING, description: 'Emoji for the reaction (unicode or custom emoji name)' },
-                role: { type: SchemaType.STRING, description: 'Role name or ID to assign when reacted' }
+                channel: { type: SchemaType.STRING, description: 'Channel name or ID' },
+                messageId: { type: SchemaType.STRING, description: 'Message ID' },
+                emoji: { type: SchemaType.STRING, description: 'Emoji' },
+                role: { type: SchemaType.STRING, description: 'Role name or ID' }
             },
             required: ['channel', 'messageId', 'emoji', 'role']
         }
     },
     {
         name: 'removeReactionRole',
-        description: 'Remove a reaction role from a message',
+        category: 'config',
+        description: 'Remove a reaction role',
         parameters: {
             type: SchemaType.OBJECT,
             properties: {
-                messageId: { type: SchemaType.STRING, description: 'Message ID to remove the reaction role from' },
-                emoji: { type: SchemaType.STRING, description: 'Emoji of the reaction role to remove' }
+                messageId: { type: SchemaType.STRING, description: 'Message ID' },
+                emoji: { type: SchemaType.STRING, description: 'Emoji to remove' }
             },
             required: ['messageId']
         }
     },
     {
         name: 'listReactionRoles',
-        description: 'List all configured reaction roles in the server',
+        category: 'info',
+        description: 'List all reaction roles',
         parameters: { type: SchemaType.OBJECT, properties: {} }
     },
 
@@ -939,36 +1017,39 @@ const toolDeclarations = [
 
     {
         name: 'setWelcomeChannel',
-        description: 'Set the welcome channel and message for new members. Template vars: {user} {server} {memberCount}',
+        category: 'config',
+        description: 'Set welcome channel and message. Vars: {user} {server} {memberCount}',
         parameters: {
             type: SchemaType.OBJECT,
             properties: {
-                channel: { type: SchemaType.STRING, description: 'Channel name or ID for welcome messages' },
-                message: { type: SchemaType.STRING, description: 'Welcome message template. Use {user} for mention, {server} for server name, {memberCount} for count.' }
+                channel: { type: SchemaType.STRING, description: 'Channel name or ID' },
+                message: { type: SchemaType.STRING, description: 'Welcome message template' }
             },
             required: ['channel']
         }
     },
     {
         name: 'setGoodbyeChannel',
-        description: 'Set the goodbye channel and message for leaving members. Template vars: {user} {server} {memberCount}',
+        category: 'config',
+        description: 'Set goodbye channel and message. Vars: {user} {server} {memberCount}',
         parameters: {
             type: SchemaType.OBJECT,
             properties: {
-                channel: { type: SchemaType.STRING, description: 'Channel name or ID for goodbye messages' },
-                message: { type: SchemaType.STRING, description: 'Goodbye message template. Use {user} for name, {server} for server name.' }
+                channel: { type: SchemaType.STRING, description: 'Channel name or ID' },
+                message: { type: SchemaType.STRING, description: 'Goodbye message template' }
             },
             required: ['channel']
         }
     },
     {
         name: 'setAutoRole',
-        description: 'Add or remove a role from the auto-assign-on-join list',
+        category: 'config',
+        description: 'Add/remove a role from auto-assign on join',
         parameters: {
             type: SchemaType.OBJECT,
             properties: {
                 role: { type: SchemaType.STRING, description: 'Role name or ID' },
-                action: { type: SchemaType.STRING, description: 'Whether to add or remove the role', enum: ['add', 'remove'] }
+                action: { type: SchemaType.STRING, description: 'Add or remove', enum: ['add', 'remove'] }
             },
             required: ['role', 'action']
         }
@@ -978,34 +1059,37 @@ const toolDeclarations = [
 
     {
         name: 'setAFKChannel',
-        description: 'Set the server AFK voice channel and timeout',
+        category: 'guild',
+        description: 'Set AFK voice channel and timeout',
         parameters: {
             type: SchemaType.OBJECT,
             properties: {
-                channel: { type: SchemaType.STRING, description: 'Voice channel name or ID for AFK' },
-                timeout: { type: SchemaType.NUMBER, description: 'AFK timeout in seconds (60, 300, 900, 1800, 3600)' }
+                channel: { type: SchemaType.STRING, description: 'Voice channel' },
+                timeout: { type: SchemaType.NUMBER, description: 'Timeout in seconds (60-3600)' }
             },
             required: ['channel']
         }
     },
     {
         name: 'setDefaultNotifications',
-        description: 'Set the server default notification level',
+        category: 'guild',
+        description: 'Set default notification level',
         parameters: {
             type: SchemaType.OBJECT,
             properties: {
-                level: { type: SchemaType.STRING, description: 'Notification level', enum: ['all', 'mentions'] }
+                level: { type: SchemaType.STRING, description: 'Level', enum: ['all', 'mentions'] }
             },
             required: ['level']
         }
     },
     {
         name: 'setServerBanner',
-        description: 'Set the server banner image (requires boost level 2+)',
+        category: 'guild',
+        description: 'Set server banner (boost level 2+ required)',
         parameters: {
             type: SchemaType.OBJECT,
             properties: {
-                url: { type: SchemaType.STRING, description: 'Image URL for the banner' }
+                url: { type: SchemaType.STRING, description: 'Image URL' }
             },
             required: ['url']
         }
