@@ -108,14 +108,11 @@ client.on(Events.MessageReactionRemove, async (reaction, user) => {
 const app = express();
 app.get('/', (_req, res) => res.send('Ultron is operational.'));
 app.get('/health', (_req, res) => {
-    let groqModel = 'unknown';
-    try { groqModel = require('./src/ai').getGroqModel(); } catch (_) {}
     res.json({
         status: 'online',
         uptime: process.uptime(),
         servers: client.guilds.cache.size,
         memoryMB: Math.round(process.memoryUsage().heapUsed / 1024 / 1024),
-        groqModel,
         ping: client.ws.ping
     });
 });

@@ -689,4 +689,4 @@ async function generateResponse(message, userInput, images = []) {
     return text;
 }
 
-module.exports = { generateResponse, selectToolsForMessage, detectToolChoice, getGroqModel };
+module.exports = { generateResponse, selectToolsForMessage, detectToolChoice };
