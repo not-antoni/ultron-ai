@@ -20,18 +20,45 @@ function resolveRole(guild, nameOrId) {
 
 async function resolveMember(guild, nameOrId) {
     if (!nameOrId) return null;
-    const cleaned = nameOrId.toLowerCase();
-    // Try by ID first
-    try {
-        const member = await guild.members.fetch(nameOrId).catch(() => null);
+    const input = nameOrId.trim();
+
+    // Extract ID from mention format <@123> or <@!123>
+    const mentionMatch = input.match(/^<@!?(\d+)>$/);
+    const rawId = mentionMatch ? mentionMatch[1] : input;
+
+    // Try direct ID fetch first
+    if (/^\d{17,20}$/.test(rawId)) {
+        const member = await guild.members.fetch(rawId).catch(() => null);
         if (member) return member;
-    } catch { /* not an ID */ }
-    // Search by name
-    const members = await guild.members.fetch({ query: nameOrId, limit: 5 }).catch(() => new Map());
-    return members.find(
+    }
+
+    // Search by query string (handles display names, usernames, partial matches)
+    const cleaned = input.toLowerCase().replace(/^@/, '');
+    const members = await guild.members.fetch({ query: cleaned, limit: 10 }).catch(() => new Map());
+
+    // Exact match first (username or display name)
+    const exact = members.find(
         m => m.user.username.toLowerCase() === cleaned ||
-             m.displayName.toLowerCase() === cleaned
-    ) || members.first() || null;
+             m.displayName.toLowerCase() === cleaned ||
+             m.user.globalName?.toLowerCase() === cleaned
+    );
+    if (exact) return exact;
+
+    // Partial match (starts with)
+    const partial = members.find(
+        m => m.user.username.toLowerCase().startsWith(cleaned) ||
+             m.displayName.toLowerCase().startsWith(cleaned)
+    );
+    if (partial) return partial;
+
+    // Contains match
+    const contains = members.find(
+        m => m.user.username.toLowerCase().includes(cleaned) ||
+             m.displayName.toLowerCase().includes(cleaned)
+    );
+    if (contains) return contains;
+
+    return members.first() || null;
 }
 
 function parseDuration(str) {

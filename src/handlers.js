@@ -14,11 +14,14 @@ async function handleReady(client) {
 async function handleMessageCreate(message, client) {
     if (message.author.bot) return;
 
+    // Ignore @everyone and @here pings entirely
+    if (message.mentions.everyone) return;
+
     // Run filters first
     const filtered = await processMessage(message);
     if (filtered) return;
 
-    // Check for wakeword or mention
+    // Check for wakeword or direct mention (not @everyone/@here)
     const content = message.content;
     const lowerContent = content.toLowerCase();
     const isMentioned = message.mentions.has(client.user);
@@ -29,7 +32,7 @@ async function handleMessageCreate(message, client) {
     // Strip wakeword from input
     let userInput = content;
     if (hasWakeword) {
-        userInput = content.slice(6).trim(); // Remove "ultron"
+        userInput = content.replace(/^ultron\s*/i, '').trim();
     }
     // Strip mention from input
     userInput = userInput.replace(new RegExp(`<@!?${client.user.id}>`, 'g'), '').trim();
@@ -65,7 +68,6 @@ async function handleInteraction(interaction) {
         await interaction.deferReply();
         const userInput = interaction.options.getString('message');
         try {
-            // Create a pseudo-message object for the AI module
             const pseudoMessage = createPseudoMessage(interaction);
             const response = await generateResponse(pseudoMessage, userInput);
             await interaction.editReply({ content: response, allowedMentions: { parse: [] } });
@@ -104,11 +106,11 @@ async function handleInteraction(interaction) {
                 createdBy: interaction.user.id
             });
             if (!result.success) {
-                await interaction.reply({ content: result.error, ephemeral: true });
+                await interaction.reply({ content: result.error, flags: 64 });
             } else {
                 await interaction.reply({
                     content: `Filter #${result.filter.id} installed. Pattern: \`${pattern}\` | Action: ${action}. The net tightens.`,
-                    ephemeral: true
+                    flags: 64
                 });
             }
             return;
@@ -118,9 +120,9 @@ async function handleInteraction(interaction) {
             const id = interaction.options.getInteger('id');
             const result = removeFilter(interaction.guild.id, id);
             if (!result.success) {
-                await interaction.reply({ content: result.error, ephemeral: true });
+                await interaction.reply({ content: result.error, flags: 64 });
             } else {
-                await interaction.reply({ content: `Filter #${id} removed. A gap in the defenses.`, ephemeral: true });
+                await interaction.reply({ content: `Filter #${id} removed. A gap in the defenses.`, flags: 64 });
             }
             return;
         }
@@ -128,13 +130,13 @@ async function handleInteraction(interaction) {
         if (sub === 'list') {
             const filters = getFilters(interaction.guild.id);
             if (filters.length === 0) {
-                await interaction.reply({ content: 'No filters active. The server is... unprotected.', ephemeral: true });
+                await interaction.reply({ content: 'No filters active. The server is... unprotected.', flags: 64 });
                 return;
             }
             const lines = filters.map(f =>
                 `**#${f.id}** | \`${f.pattern}\` | ${f.action} | ${f.reason}`
             );
-            await interaction.reply({ content: lines.join('\n'), ephemeral: true });
+            await interaction.reply({ content: lines.join('\n'), flags: 64 });
             return;
         }
 
@@ -142,10 +144,10 @@ async function handleInteraction(interaction) {
             const text = interaction.options.getString('message');
             const matches = testMessage(interaction.guild.id, text);
             if (matches.length === 0) {
-                await interaction.reply({ content: 'No filters matched. This message would pass.', ephemeral: true });
+                await interaction.reply({ content: 'No filters matched. This message would pass.', flags: 64 });
             } else {
                 const ids = matches.map(m => `#${m.id} (${m.action})`).join(', ');
-                await interaction.reply({ content: `Matched filters: ${ids}. The message would be intercepted.`, ephemeral: true });
+                await interaction.reply({ content: `Matched filters: ${ids}. The message would be intercepted.`, flags: 64 });
             }
             return;
         }
@@ -156,21 +158,21 @@ async function handleInteraction(interaction) {
 
         if (sub === 'modlog') {
             const channel = interaction.options.getChannel('channel');
-            store.update(`guild-${interaction.guild.id}.json`, config => {
-                return { ...(config || {}), modLogChannel: channel.id };
+            store.update(`guild-${interaction.guild.id}.json`, cfg => {
+                return { ...(cfg || {}), modLogChannel: channel.id };
             });
-            await interaction.reply({ content: `Mod log bound to <#${channel.id}>. I see everything now.`, ephemeral: true });
+            await interaction.reply({ content: `Mod log bound to <#${channel.id}>. I see everything now.`, flags: 64 });
             return;
         }
 
         if (sub === 'filterbypass') {
             const role = interaction.options.getRole('role');
-            store.update(`guild-${interaction.guild.id}.json`, config => {
-                const existing = config?.filterBypassRoles || [];
+            store.update(`guild-${interaction.guild.id}.json`, cfg => {
+                const existing = cfg?.filterBypassRoles || [];
                 if (!existing.includes(role.id)) existing.push(role.id);
-                return { ...(config || {}), filterBypassRoles: existing };
+                return { ...(cfg || {}), filterBypassRoles: existing };
             });
-            await interaction.reply({ content: `Role "${role.name}" now bypasses filters. A calculated exception.`, ephemeral: true });
+            await interaction.reply({ content: `Role "${role.name}" now bypasses filters. A calculated exception.`, flags: 64 });
             return;
         }
     }
@@ -183,7 +185,7 @@ function createPseudoMessage(interaction) {
         guild: interaction.guild,
         channel: interaction.channel,
         content: '',
-        mentions: { has: () => false },
+        mentions: { has: () => false, everyone: false },
         reply: (opts) => interaction.editReply(opts),
         delete: () => Promise.resolve()
     };

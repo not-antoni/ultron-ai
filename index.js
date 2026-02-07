@@ -25,16 +25,38 @@ const client = new Client({
 client.once(Events.ClientReady, async () => {
     await handleReady(client);
 
-    // Deploy slash commands
+    // Deploy slash commands globally + per-guild (guild = instant, global = persistent)
     try {
         const rest = new REST().setToken(config.discord.token);
-        await rest.put(
-            Routes.applicationCommands(client.user.id),
-            { body: commands.map(c => c.toJSON()) }
-        );
-        console.log(`Deployed ${commands.length} slash commands.`);
+        const body = commands.map(c => c.toJSON());
+
+        // Register globally (takes up to 1h to propagate)
+        await rest.put(Routes.applicationCommands(client.user.id), { body });
+
+        // Also register per-guild for instant visibility
+        const guildIds = client.guilds.cache.map(g => g.id);
+        for (const guildId of guildIds) {
+            await rest.put(
+                Routes.applicationGuildCommands(client.user.id, guildId),
+                { body }
+            ).catch(err => console.warn(`[Commands] Failed for guild ${guildId}:`, err.message));
+        }
+
+        console.log(`Deployed ${commands.length} commands to ${guildIds.length} guilds + global.`);
     } catch (err) {
         console.error('Failed to deploy slash commands:', err.message);
+    }
+});
+
+// Also register commands when joining a new guild
+client.on(Events.GuildCreate, async guild => {
+    try {
+        const rest = new REST().setToken(config.discord.token);
+        const body = commands.map(c => c.toJSON());
+        await rest.put(Routes.applicationGuildCommands(client.user.id, guild.id), { body });
+        console.log(`[Commands] Registered for new guild: ${guild.name}`);
+    } catch (err) {
+        console.warn(`[Commands] Failed for new guild ${guild.name}:`, err.message);
     }
 });
 
