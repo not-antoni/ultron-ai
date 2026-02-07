@@ -1,5 +1,7 @@
 const { Client, GatewayIntentBits, Partials, REST, Routes, Events } = require('discord.js');
 const express = require('express');
+const fs = require('fs');
+const path = require('path');
 const config = require('./config');
 const { commands } = require('./src/commands');
 const {
@@ -105,10 +107,49 @@ client.on(Events.MessageReactionRemove, async (reaction, user) => {
 
 const app = express();
 app.get('/', (_req, res) => res.send('Ultron is operational.'));
-app.get('/health', (_req, res) => res.json({ status: 'online', uptime: process.uptime() }));
+app.get('/health', (_req, res) => {
+    let groqModel = 'unknown';
+    try { groqModel = require('./src/ai').getGroqModel(); } catch (_) {}
+    res.json({
+        status: 'online',
+        uptime: process.uptime(),
+        servers: client.guilds.cache.size,
+        memoryMB: Math.round(process.memoryUsage().heapUsed / 1024 / 1024),
+        groqModel,
+        ping: client.ws.ping
+    });
+});
 app.listen(config.server.port, () => {
     console.log(`Health server on port ${config.server.port}`);
 });
+
+// ── Conversation Cleanup Scheduler ──
+
+function cleanupOldConversations() {
+    const dataDir = path.join(__dirname, 'data');
+    if (!fs.existsSync(dataDir)) return;
+    const now = Date.now();
+    const THIRTY_DAYS = 30 * 24 * 60 * 60 * 1000;
+    let pruned = 0;
+    try {
+        const files = fs.readdirSync(dataDir).filter(f => f.startsWith('conversations-') && f.endsWith('.json'));
+        for (const file of files) {
+            const filePath = path.join(dataDir, file);
+            const stats = fs.statSync(filePath);
+            if (now - stats.mtimeMs > THIRTY_DAYS) {
+                fs.unlinkSync(filePath);
+                pruned++;
+            }
+        }
+        if (pruned > 0) console.log(`[Ultron] Pruned ${pruned} old conversation file(s)`);
+    } catch (err) {
+        console.error('[Ultron] Conversation cleanup error:', err.message);
+    }
+}
+
+// Run cleanup daily + 60s after startup
+setInterval(cleanupOldConversations, 24 * 60 * 60 * 1000);
+setTimeout(cleanupOldConversations, 60000);
 
 // ── Graceful Shutdown ──
 

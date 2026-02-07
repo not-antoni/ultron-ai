@@ -79,6 +79,11 @@ function createMockChannel(guild, id, name, type = ChannelType.GuildText) {
             }
         },
 
+        _archived: false,
+        members: {
+            async add() {}
+        },
+        async setArchived(val) { this._archived = val; },
         async send() { return { id: `sent-${Date.now()}` }; },
         async delete() { guild.channels.cache.delete(this.id); },
         async setName(n) { this.name = n; },
@@ -123,6 +128,13 @@ function createMockMember(guild, id, username, permFlags = []) {
             cache: new Collection(),
             async add(role) { this.cache.set(role.id, role); },
             async remove(role) { this.cache.delete(role.id); }
+        },
+        voice: {
+            channel: null,
+            async setChannel(ch) { this.channel = ch; },
+            async disconnect() { this.channel = null; },
+            async setMute(mute) { this.serverMute = mute; },
+            async setDeaf(deaf) { this.serverDeaf = deaf; }
         },
         async kick() {},
         async ban() {},

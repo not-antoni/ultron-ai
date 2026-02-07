@@ -1085,3 +1085,165 @@ describe('Tool Choice Detection', () => {
         assert.strictEqual(detectToolChoice('delete the channel'), 'required');
     });
 });
+
+// ═══════════════════════════════════════════════════════════════
+//  VOICE MANAGEMENT
+// ═══════════════════════════════════════════════════════════════
+
+describe('Voice Management', () => {
+    test('moveToVoice — success', async () => {
+        const env = createMockEnvironment();
+        const msg = createMessage(env, env.members.admin);
+        // Put user in a voice channel first
+        env.members.user.voice.channel = env.channels.voice;
+        const result = await executeTool('moveToVoice', { user: 'RegularUser', channel: 'voice-chat' }, msg);
+        assert.strictEqual(result.success, true);
+    });
+
+    test('moveToVoice — not in voice', async () => {
+        const env = createMockEnvironment();
+        const msg = createMessage(env, env.members.admin);
+        const result = await executeTool('moveToVoice', { user: 'RegularUser', channel: 'voice-chat' }, msg);
+        assert.ok(result.error.includes('not in a voice channel'));
+    });
+
+    test('moveToVoice — not a voice channel', async () => {
+        const env = createMockEnvironment();
+        const msg = createMessage(env, env.members.admin);
+        env.members.user.voice.channel = env.channels.voice;
+        const result = await executeTool('moveToVoice', { user: 'RegularUser', channel: 'general' }, msg);
+        assert.ok(result.error.includes('not a voice channel'));
+    });
+
+    test('disconnectFromVoice — success', async () => {
+        const env = createMockEnvironment();
+        const msg = createMessage(env, env.members.admin);
+        env.members.user.voice.channel = env.channels.voice;
+        const result = await executeTool('disconnectFromVoice', { user: 'RegularUser' }, msg);
+        assert.strictEqual(result.success, true);
+    });
+
+    test('disconnectFromVoice — not in voice', async () => {
+        const env = createMockEnvironment();
+        const msg = createMessage(env, env.members.admin);
+        const result = await executeTool('disconnectFromVoice', { user: 'RegularUser' }, msg);
+        assert.ok(result.error.includes('not in a voice channel'));
+    });
+
+    test('voiceMute — success', async () => {
+        const env = createMockEnvironment();
+        const msg = createMessage(env, env.members.admin);
+        env.members.user.voice.channel = env.channels.voice;
+        const result = await executeTool('voiceMute', { user: 'RegularUser', mute: true }, msg);
+        assert.strictEqual(result.success, true);
+        assert.strictEqual(result.muted, true);
+    });
+
+    test('voiceDeafen — success', async () => {
+        const env = createMockEnvironment();
+        const msg = createMessage(env, env.members.admin);
+        env.members.user.voice.channel = env.channels.voice;
+        const result = await executeTool('voiceDeafen', { user: 'RegularUser', deafen: true }, msg);
+        assert.strictEqual(result.success, true);
+        assert.strictEqual(result.deafened, true);
+    });
+});
+
+// ═══════════════════════════════════════════════════════════════
+//  THREAD MANAGEMENT (archive/unarchive/addMember)
+// ═══════════════════════════════════════════════════════════════
+
+describe('Thread Management (Extended)', () => {
+    test('archiveThread — success', async () => {
+        const env = createMockEnvironment();
+        const msg = createMessage(env, env.members.admin);
+        // Create a thread first
+        const thread = await env.channels.general.threads.create({ name: 'test-thread' });
+        const result = await executeTool('archiveThread', { thread: 'test-thread' }, msg);
+        assert.strictEqual(result.success, true);
+        assert.strictEqual(result.archived, true);
+    });
+
+    test('archiveThread — not found', async () => {
+        const env = createMockEnvironment();
+        const msg = createMessage(env, env.members.admin);
+        const result = await executeTool('archiveThread', { thread: 'no-such-thread' }, msg);
+        assert.ok(result.error.includes('not found'));
+    });
+
+    test('unarchiveThread — success', async () => {
+        const env = createMockEnvironment();
+        const msg = createMessage(env, env.members.admin);
+        const thread = await env.channels.general.threads.create({ name: 'archived-thread' });
+        thread._archived = true;
+        const result = await executeTool('unarchiveThread', { thread: 'archived-thread' }, msg);
+        assert.strictEqual(result.success, true);
+        assert.strictEqual(result.archived, false);
+    });
+
+    test('addThreadMember — success', async () => {
+        const env = createMockEnvironment();
+        const msg = createMessage(env, env.members.admin);
+        const thread = await env.channels.general.threads.create({ name: 'member-thread' });
+        const result = await executeTool('addThreadMember', { thread: 'member-thread', user: 'RegularUser' }, msg);
+        assert.strictEqual(result.success, true);
+        assert.strictEqual(result.user, 'RegularUser');
+    });
+
+    test('addThreadMember — thread not found', async () => {
+        const env = createMockEnvironment();
+        const msg = createMessage(env, env.members.admin);
+        const result = await executeTool('addThreadMember', { thread: 'ghost-thread', user: 'RegularUser' }, msg);
+        assert.ok(result.error.includes('not found'));
+    });
+});
+
+// ═══════════════════════════════════════════════════════════════
+//  TIMEOUT VALIDATION
+// ═══════════════════════════════════════════════════════════════
+
+describe('Timeout Validation', () => {
+    test('timeout > 28 days rejected', async () => {
+        const env = createMockEnvironment();
+        const msg = createMessage(env, env.members.admin);
+        const result = await executeTool('timeoutMember', { user: 'RegularUser', duration: '30d' }, msg);
+        assert.ok(result.error.includes('cannot exceed 28 days'));
+    });
+
+    test('timeout 28d accepted', async () => {
+        const env = createMockEnvironment();
+        const msg = createMessage(env, env.members.admin);
+        const result = await executeTool('timeoutMember', { user: 'RegularUser', duration: '28d' }, msg);
+        assert.strictEqual(result.success, true);
+    });
+});
+
+// ═══════════════════════════════════════════════════════════════
+//  LIST PAGINATION
+// ═══════════════════════════════════════════════════════════════
+
+describe('List Pagination', () => {
+    test('listChannels — returns total and showing', async () => {
+        const env = createMockEnvironment();
+        const msg = createMessage(env, env.members.admin);
+        const result = await executeTool('listChannels', {}, msg);
+        assert.ok(result.total !== undefined);
+        assert.ok(result.showing !== undefined);
+        assert.ok(result.showing <= 50); // default limit
+    });
+
+    test('listRoles — returns total and showing', async () => {
+        const env = createMockEnvironment();
+        const msg = createMessage(env, env.members.admin);
+        const result = await executeTool('listRoles', {}, msg);
+        assert.ok(result.total !== undefined);
+        assert.ok(result.showing !== undefined);
+    });
+
+    test('listChannels — respects limit', async () => {
+        const env = createMockEnvironment();
+        const msg = createMessage(env, env.members.admin);
+        const result = await executeTool('listChannels', { limit: 2 }, msg);
+        assert.ok(result.showing <= 2);
+    });
+});

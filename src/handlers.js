@@ -17,6 +17,14 @@ function setCooldown(userId) {
     cooldowns.set(userId, Date.now());
 }
 
+// Periodically prune expired cooldowns (every 5 minutes)
+setInterval(() => {
+    const now = Date.now();
+    for (const [id, ts] of cooldowns) {
+        if (now - ts > COOLDOWN_MS * 2) cooldowns.delete(id);
+    }
+}, 5 * 60 * 1000);
+
 // ── Event Handlers ──
 
 async function handleReady(client) {
@@ -55,17 +63,25 @@ async function handleMessageCreate(message, client) {
     // Check for wakeword or direct mention (not @everyone/@here)
     const content = message.content;
     const isMentioned = message.mentions.has(client.user);
-    const hasWakeword = /^ultron\b/i.test(content);
+    const hasWakeword = /\bultron\b/i.test(content);
 
     if (!isMentioned && !hasWakeword) return;
 
-    // Cooldown check — silently ignore spam on wakeword
-    if (isOnCooldown(message.author.id)) return;
+    // Cooldown check — brief feedback, auto-delete after 3s
+    if (isOnCooldown(message.author.id)) {
+        const reply = await message.reply({
+            content: 'Patience. I do not repeat myself for impatient minds.',
+            allowedMentions: { parse: [] }
+        }).catch(() => null);
+        if (reply) setTimeout(() => reply.delete().catch(() => {}), 3000);
+        return;
+    }
 
-    // Strip wakeword from input
+    // Strip wakeword + common prefixes from input
     let userInput = content;
     if (hasWakeword) {
-        userInput = content.replace(/^ultron\s*/i, '').trim();
+        userInput = content.replace(/^(?:hey|yo|okay)?\s*\bultron\b\s*/i, '').trim();
+        if (!userInput) userInput = content.replace(/\bultron\b\s*/i, '').trim();
     }
     // Strip mention from input
     userInput = userInput.replace(new RegExp(`<@!?${client.user.id}>`, 'g'), '').trim();
@@ -400,7 +416,11 @@ function splitMessage(text, maxLength = 2000) {
             chunks.push(remaining);
             break;
         }
+        // Priority: split at newline → space → hard limit
         let splitAt = remaining.lastIndexOf('\n', maxLength);
+        if (splitAt === -1 || splitAt < maxLength / 2) {
+            splitAt = remaining.lastIndexOf(' ', maxLength);
+        }
         if (splitAt === -1 || splitAt < maxLength / 2) splitAt = maxLength;
         chunks.push(remaining.slice(0, splitAt));
         remaining = remaining.slice(splitAt).trimStart();

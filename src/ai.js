@@ -117,9 +117,9 @@ const BASE_TOOL_NAMES = new Set([
 
 // Keyword → category mapping for dynamic selection
 const CATEGORY_KEYWORDS = {
-    channel: /\b(?:channel|thread|slow\s?mode|lock|unlock|nsfw|voice\s?limit|clone\s?channel|move\s?channel)\b/i,
+    channel: /\b(?:channel|thread|archive|slow\s?mode|lock|unlock|nsfw|voice\s?limit|clone\s?channel|move\s?channel)\b/i,
     role: /\b(?:role|assign|give\s+role|remove\s+role)\b/i,
-    moderation: /\b(?:kick|ban|unban|timeout|mute|unmute|nick(?:name)?)\b/i,
+    moderation: /\b(?:kick|ban|unban|timeout|mute|unmute|nick(?:name)?|voice|disconnect|deafen)\b/i,
     message: /\b(?:message|send|purge|pin|unpin|embed|reply|react|poll|dm|direct\s+message)\b/i,
     guild: /\b(?:server\s+(?:name|icon|banner|setting)|verification|afk|notification|rename\s+server)\b/i,
     permission: /\b(?:perm(?:ission)?|overwrite|allow|deny)\b/i,
@@ -598,16 +598,18 @@ async function generateResponse(message, userInput, images = []) {
     const historyFile = guild ? `conversations-${guild.id}-${userId}.json` : `conversations-dm-${userId}.json`;
     const history = store.read(historyFile, []);
 
+    // Consolidate tool contexts into a single summary to reduce token bloat
+    const recentHistory = history.slice(-config.maxConversationHistory);
+    const toolSummary = recentHistory.filter(e => e.toolContext).map(e => e.toolContext).join(' ');
+
     const contents = [];
-    for (const entry of history.slice(-config.maxConversationHistory)) {
+    if (toolSummary) {
+        contents.push({ role: 'user', parts: [{ text: `[SYSTEM] Recent actions you performed: ${toolSummary}` }] });
+        contents.push({ role: 'model', parts: [{ text: 'Acknowledged.' }] });
+    }
+    for (const entry of recentHistory) {
         contents.push({ role: 'user', parts: [{ text: entry.user }] });
         contents.push({ role: 'model', parts: [{ text: entry.model }] });
-        // Inject tool context as a separate exchange so the model knows what it did
-        // but doesn't learn to include [Used ...] in its own responses
-        if (entry.toolContext) {
-            contents.push({ role: 'user', parts: [{ text: `[SYSTEM] Previous action context: ${entry.toolContext}` }] });
-            contents.push({ role: 'model', parts: [{ text: 'Acknowledged.' }] });
-        }
     }
     contents.push({ role: 'user', parts: [{ text: `[${userName}]: ${userInput}` }] });
 
@@ -626,6 +628,7 @@ async function generateResponse(message, userInput, images = []) {
             if (result?.text) console.log(`[Ultron] Response via Groq (${hasImages ? 'vision' : getGroqModel()})`);
         } catch (err) {
             console.error('[Ultron] Groq failed:', err.message);
+            if (hasImages) console.log('[Ultron] Vision request — falling back to Gemini');
         }
     }
 
@@ -686,4 +689,4 @@ async function generateResponse(message, userInput, images = []) {
     return text;
 }
 
-module.exports = { generateResponse, selectToolsForMessage, detectToolChoice };
+module.exports = { generateResponse, selectToolsForMessage, detectToolChoice, getGroqModel };

@@ -83,6 +83,43 @@ const toolDeclarations = [
         }
     },
     {
+        name: 'archiveThread',
+        category: 'channel',
+        description: 'Archive a thread',
+        parameters: {
+            type: SchemaType.OBJECT,
+            properties: {
+                thread: { type: SchemaType.STRING, description: 'Thread name or ID' }
+            },
+            required: ['thread']
+        }
+    },
+    {
+        name: 'unarchiveThread',
+        category: 'channel',
+        description: 'Unarchive a thread',
+        parameters: {
+            type: SchemaType.OBJECT,
+            properties: {
+                thread: { type: SchemaType.STRING, description: 'Thread name or ID' }
+            },
+            required: ['thread']
+        }
+    },
+    {
+        name: 'addThreadMember',
+        category: 'channel',
+        description: 'Add a member to a thread',
+        parameters: {
+            type: SchemaType.OBJECT,
+            properties: {
+                thread: { type: SchemaType.STRING, description: 'Thread name or ID' },
+                user: { type: SchemaType.STRING, description: 'Username or user ID' }
+            },
+            required: ['thread', 'user']
+        }
+    },
+    {
         name: 'setSlowmode',
         category: 'channel',
         description: 'Set slowmode delay (0 to disable)',
@@ -336,6 +373,60 @@ const toolDeclarations = [
             properties: {
                 user: { type: SchemaType.STRING, description: 'Username or user ID' },
                 nickname: { type: SchemaType.STRING, description: 'New nickname (empty to clear)' }
+            },
+            required: ['user']
+        }
+    },
+
+    // ── Voice Management ──
+
+    {
+        name: 'moveToVoice',
+        category: 'moderation',
+        description: 'Move a member to a different voice channel',
+        parameters: {
+            type: SchemaType.OBJECT,
+            properties: {
+                user: { type: SchemaType.STRING, description: 'Username or user ID' },
+                channel: { type: SchemaType.STRING, description: 'Target voice channel name or ID' }
+            },
+            required: ['user', 'channel']
+        }
+    },
+    {
+        name: 'disconnectFromVoice',
+        category: 'moderation',
+        description: 'Disconnect a member from voice',
+        parameters: {
+            type: SchemaType.OBJECT,
+            properties: {
+                user: { type: SchemaType.STRING, description: 'Username or user ID' }
+            },
+            required: ['user']
+        }
+    },
+    {
+        name: 'voiceMute',
+        category: 'moderation',
+        description: 'Server-mute a member in voice',
+        parameters: {
+            type: SchemaType.OBJECT,
+            properties: {
+                user: { type: SchemaType.STRING, description: 'Username or user ID' },
+                mute: { type: SchemaType.BOOLEAN, description: 'True to mute, false to unmute' }
+            },
+            required: ['user']
+        }
+    },
+    {
+        name: 'voiceDeafen',
+        category: 'moderation',
+        description: 'Server-deafen a member in voice',
+        parameters: {
+            type: SchemaType.OBJECT,
+            properties: {
+                user: { type: SchemaType.STRING, description: 'Username or user ID' },
+                deafen: { type: SchemaType.BOOLEAN, description: 'True to deafen, false to undeafen' }
             },
             required: ['user']
         }
@@ -773,14 +864,24 @@ const toolDeclarations = [
     {
         name: 'listChannels',
         category: 'info',
-        description: 'List all channels',
-        parameters: { type: SchemaType.OBJECT, properties: {} }
+        description: 'List channels (default 50, max 100)',
+        parameters: {
+            type: SchemaType.OBJECT,
+            properties: {
+                limit: { type: SchemaType.NUMBER, description: 'Max results (1-100, default 50)' }
+            }
+        }
     },
     {
         name: 'listRoles',
         category: 'info',
-        description: 'List all roles',
-        parameters: { type: SchemaType.OBJECT, properties: {} }
+        description: 'List roles (default 50, max 100)',
+        parameters: {
+            type: SchemaType.OBJECT,
+            properties: {
+                limit: { type: SchemaType.NUMBER, description: 'Max results (1-100, default 50)' }
+            }
+        }
     },
 
     // ── Message Reading ──

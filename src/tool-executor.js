@@ -8,7 +8,10 @@ function resolveChannel(guild, nameOrId) {
     const cleaned = nameOrId.replace(/^#/, '').toLowerCase();
     return guild.channels.cache.find(c => c.id === nameOrId || c.name.toLowerCase() === cleaned)
         || guild.channels.cache.find(c => c.name.toLowerCase().startsWith(cleaned))
-        || guild.channels.cache.find(c => c.name.toLowerCase().includes(cleaned))
+        || guild.channels.cache.find(c => {
+            const name = c.name.toLowerCase();
+            return name.includes(cleaned) && cleaned.length >= name.length * 0.5;
+        })
         || null;
 }
 
@@ -31,11 +34,23 @@ async function resolveMember(guild, nameOrId) {
         if (member) return member;
     }
     const cleaned = input.toLowerCase().replace(/^@/, '');
-    const members = await guild.members.fetch({ query: cleaned, limit: 10 }).catch(() => new Map());
+    // API query (searches username prefix only)
+    const apiResults = await guild.members.fetch({ query: cleaned, limit: 10 }).catch(() => new Map());
+    // Also search cache for displayName/globalName matches
+    const cacheResults = guild.members.cache.filter(m => {
+        const dn = m.displayName.toLowerCase();
+        const gn = m.user.globalName?.toLowerCase() || '';
+        return dn.includes(cleaned) || gn.includes(cleaned);
+    });
+    // Merge into array (deduplicate by id)
+    const seen = new Set();
+    const members = [];
+    for (const m of apiResults.values()) { if (!seen.has(m.id)) { seen.add(m.id); members.push(m); } }
+    for (const m of cacheResults.values()) { if (!seen.has(m.id)) { seen.add(m.id); members.push(m); } }
+
     return members.find(m => m.user.username.toLowerCase() === cleaned || m.displayName.toLowerCase() === cleaned || m.user.globalName?.toLowerCase() === cleaned)
         || members.find(m => m.user.username.toLowerCase().startsWith(cleaned) || m.displayName.toLowerCase().startsWith(cleaned))
-        || members.find(m => m.user.username.toLowerCase().includes(cleaned) || m.displayName.toLowerCase().includes(cleaned))
-        || members.first() || null;
+        || members[0] || null;
 }
 
 function parseDuration(str) {
@@ -63,10 +78,11 @@ const TOOL_TIERS = {
 
     // Tier 2 — Moderator (constructive / moderate actions)
     createChannel: 2, renameChannel: 2, setChannelTopic: 2,
-    createThread: 2, deleteThread: 2,
+    createThread: 2, deleteThread: 2, archiveThread: 2, unarchiveThread: 2, addThreadMember: 2,
     addEmoji: 2, removeEmoji: 2,
     createRole: 2, assignRole: 2, removeRole: 2, editRole: 2,
     timeoutMember: 2, untimeoutMember: 2, setNickname: 2, setSlowmode: 2,
+    moveToVoice: 2, voiceMute: 2, voiceDeafen: 2,
     sendMessage: 2, sendEmbed: 2, replyToMessage: 2, editMessage: 2,
     addReaction: 2, createPoll: 2, dmUser: 2,
     moveChannel: 2, cloneChannel: 2, setChannelNSFW: 2, setVoiceUserLimit: 2,
@@ -81,7 +97,7 @@ const TOOL_TIERS = {
     setWelcomeChannel: 2, setGoodbyeChannel: 2, setAutoRole: 2,
 
     // Tier 3 — Admin (destructive / dangerous)
-    kickMember: 3, banMember: 3, unbanMember: 3,
+    kickMember: 3, banMember: 3, unbanMember: 3, disconnectFromVoice: 3,
     deleteChannel: 3, deleteRole: 3, purgeMessages: 3,
     updateServerName: 3, updateServerIcon: 3, setVerificationLevel: 3,
     deleteInvite: 3, createAutomodRule: 3, deleteAutomodRule: 3,
@@ -190,6 +206,35 @@ const tools = {
         const name = thread.name;
         await thread.delete();
         return { success: true, deleted: name };
+    },
+
+    async archiveThread(args, message) {
+        const guild = message.guild;
+        const cleaned = args.thread.toLowerCase();
+        const thread = guild.channels.cache.find(c => c.isThread() && (c.id === args.thread || c.name.toLowerCase() === cleaned));
+        if (!thread) return { error: `Thread "${args.thread}" not found.` };
+        await thread.setArchived(true);
+        return { success: true, thread: thread.name, archived: true };
+    },
+
+    async unarchiveThread(args, message) {
+        const guild = message.guild;
+        const cleaned = args.thread.toLowerCase();
+        const thread = guild.channels.cache.find(c => c.isThread() && (c.id === args.thread || c.name.toLowerCase() === cleaned));
+        if (!thread) return { error: `Thread "${args.thread}" not found.` };
+        await thread.setArchived(false);
+        return { success: true, thread: thread.name, archived: false };
+    },
+
+    async addThreadMember(args, message) {
+        const guild = message.guild;
+        const cleaned = args.thread.toLowerCase();
+        const thread = guild.channels.cache.find(c => c.isThread() && (c.id === args.thread || c.name.toLowerCase() === cleaned));
+        if (!thread) return { error: `Thread "${args.thread}" not found.` };
+        const member = await resolveMember(guild, args.user);
+        if (!member) return { error: `Member "${args.user}" not found.` };
+        await thread.members.add(member.id);
+        return { success: true, thread: thread.name, user: member.displayName };
     },
 
     async setSlowmode(args, message) {
@@ -338,6 +383,8 @@ const tools = {
         if (!member.moderatable) return { error: `Cannot timeout ${member.displayName}. They are above me.` };
         const ms = parseDuration(args.duration);
         if (!ms) return { error: `Invalid duration "${args.duration}". Use format like 5m, 1h, 1d.` };
+        const MAX_TIMEOUT = 2419200000; // 28 days
+        if (ms > MAX_TIMEOUT) return { error: `Timeout cannot exceed 28 days. Requested: ${args.duration}.` };
         await member.timeout(ms, args.reason || 'Silenced by Ultron.');
         return { success: true, user: member.displayName, duration: args.duration };
     },
@@ -365,6 +412,45 @@ const tools = {
         const nickname = args.nickname || null;
         await member.setNickname(nickname);
         return { success: true, user: member.user.username, nickname: nickname || '(cleared)' };
+    },
+
+    // ── Voice Management ──
+
+    async moveToVoice(args, message) {
+        const member = await resolveMember(message.guild, args.user);
+        if (!member) return { error: `Member "${args.user}" not found.` };
+        if (!member.voice.channel) return { error: `${member.displayName} is not in a voice channel.` };
+        const target = resolveChannel(message.guild, args.channel);
+        if (!target) return { error: `Channel "${args.channel}" not found.` };
+        if (!target.isVoiceBased()) return { error: `"${target.name}" is not a voice channel.` };
+        await member.voice.setChannel(target);
+        return { success: true, user: member.displayName, channel: target.name };
+    },
+
+    async disconnectFromVoice(args, message) {
+        const member = await resolveMember(message.guild, args.user);
+        if (!member) return { error: `Member "${args.user}" not found.` };
+        if (!member.voice.channel) return { error: `${member.displayName} is not in a voice channel.` };
+        await member.voice.disconnect();
+        return { success: true, user: member.displayName };
+    },
+
+    async voiceMute(args, message) {
+        const member = await resolveMember(message.guild, args.user);
+        if (!member) return { error: `Member "${args.user}" not found.` };
+        if (!member.voice.channel) return { error: `${member.displayName} is not in a voice channel.` };
+        const mute = args.mute !== false;
+        await member.voice.setMute(mute, 'Voice action by Ultron.');
+        return { success: true, user: member.displayName, muted: mute };
+    },
+
+    async voiceDeafen(args, message) {
+        const member = await resolveMember(message.guild, args.user);
+        if (!member) return { error: `Member "${args.user}" not found.` };
+        if (!member.voice.channel) return { error: `${member.displayName} is not in a voice channel.` };
+        const deafen = args.deafen !== false;
+        await member.voice.setDeaf(deafen, 'Voice action by Ultron.');
+        return { success: true, user: member.displayName, deafened: deafen };
     },
 
     // ── Message Management ──
@@ -508,7 +594,7 @@ const tools = {
         } else if (args.actions === 'alert') {
             const logChannel = args.alertChannel ? resolveChannel(message.guild, args.alertChannel) : null;
             if (!logChannel) return { error: 'Alert action requires an alertChannel. Specify which channel to send alerts to.' };
-            ruleOptions.actions = [{ type: AutoModerationActionType.SendAlertMessage, metadata: { channel: logChannel } }];
+            ruleOptions.actions = [{ type: AutoModerationActionType.SendAlertMessage, metadata: { channel: logChannel.id } }];
         }
 
         const rule = await message.guild.autoModerationRules.create(ruleOptions);
@@ -1023,16 +1109,18 @@ const tools = {
         };
     },
 
-    async listChannels(_args, message) {
-        const channels = message.guild.channels.cache.filter(c => !c.isThread()).sort((a, b) => a.position - b.position)
-            .map(c => ({ name: c.name, type: c.type, id: c.id }));
-        return { channels };
+    async listChannels(args, message) {
+        const limit = Math.min(parseInt(args.limit, 10) || 50, 100);
+        const all = message.guild.channels.cache.filter(c => !c.isThread()).sort((a, b) => a.position - b.position);
+        const channels = all.map(c => ({ name: c.name, type: c.type, id: c.id })).slice(0, limit);
+        return { channels, total: all.size, showing: channels.length };
     },
 
-    async listRoles(_args, message) {
-        const roles = message.guild.roles.cache.filter(r => r.id !== message.guild.id).sort((a, b) => b.position - a.position)
-            .map(r => ({ name: r.name, color: r.hexColor, members: r.members.size, id: r.id }));
-        return { roles };
+    async listRoles(args, message) {
+        const limit = Math.min(parseInt(args.limit, 10) || 50, 100);
+        const all = message.guild.roles.cache.filter(r => r.id !== message.guild.id).sort((a, b) => b.position - a.position);
+        const roles = all.map(r => ({ name: r.name, color: r.hexColor, members: r.members.size, id: r.id })).slice(0, limit);
+        return { roles, total: all.size, showing: roles.length };
     }
 };
 
