@@ -321,12 +321,12 @@ const toolDeclarations = [
 
     {
         name: 'sendMessage',
-        description: 'Send a message to a specific channel',
+        description: 'Send a message to a specific channel. Supports mentions: use <@USER_ID> to ping a user, <@&ROLE_ID> to ping a role, <#CHANNEL_ID> to link a channel. You can also use @everyone or @here.',
         parameters: {
             type: SchemaType.OBJECT,
             properties: {
                 channel: { type: SchemaType.STRING, description: 'Channel name or ID to send the message in' },
-                content: { type: SchemaType.STRING, description: 'Message content to send' }
+                content: { type: SchemaType.STRING, description: 'Message content to send. Use <@USER_ID> to mention/ping users.' }
             },
             required: ['channel', 'content']
         }
