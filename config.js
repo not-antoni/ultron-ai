@@ -10,8 +10,7 @@ module.exports = {
         model: 'gemini-2.0-flash',
         models: [
             'gemini-2.0-flash',
-            'gemini-2.0-flash-lite',
-            'gemini-1.5-pro'
+            'gemini-2.0-flash-lite'
         ]
     },
     groq: {

@@ -279,8 +279,8 @@ async function groqRequest(messages, tools, toolChoice) {
                 }, 60000);
                 continue;
             }
-            if (err.status === 400) {
-                groqLog.warn(`${model} rejected (${err.message?.slice(0, 80)}), trying next model...`);
+            if (err.status === 400 || err.status === 413) {
+                groqLog.warn(`${model} ${err.status} (${err.message?.slice(0, 80)}), trying next model...`);
                 continue;
             }
             if (err.status === 503) {
