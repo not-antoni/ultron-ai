@@ -1,16 +1,24 @@
 const { generateResponse } = require('./ai');
 const { processMessage, getFilters, addFilter, removeFilter, testMessage } = require('./filters');
 const store = require('./store');
+const { createLogger } = require('./logger');
+const log = createLogger('Ultron');
 
 // ── Cooldown System ──
 
 const cooldowns = new Map();
-const COOLDOWN_MS = 5000;
+const DEFAULT_COOLDOWN_MS = 5000;
 
-function isOnCooldown(userId) {
+function getCooldownMs(guildId) {
+    if (!guildId) return DEFAULT_COOLDOWN_MS;
+    const cfg = store.read(`guild-${guildId}.json`, {});
+    return cfg.cooldownMs || DEFAULT_COOLDOWN_MS;
+}
+
+function isOnCooldown(userId, guildId) {
     const last = cooldowns.get(userId);
     if (!last) return false;
-    return Date.now() - last < COOLDOWN_MS;
+    return Date.now() - last < getCooldownMs(guildId);
 }
 
 function setCooldown(userId) {
@@ -21,15 +29,15 @@ function setCooldown(userId) {
 setInterval(() => {
     const now = Date.now();
     for (const [id, ts] of cooldowns) {
-        if (now - ts > COOLDOWN_MS * 2) cooldowns.delete(id);
+        if (now - ts > 60000) cooldowns.delete(id);
     }
 }, 5 * 60 * 1000);
 
 // ── Event Handlers ──
 
 async function handleReady(client) {
-    console.log(`\x1b[31mUltron online. Logged in as ${client.user.tag}\x1b[0m`);
-    console.log(`Watching ${client.guilds.cache.size} servers.`);
+    log.info(`Ultron online. Logged in as ${client.user.tag}`);
+    log.info(`Watching ${client.guilds.cache.size} servers.`);
     client.user.setPresence({
         activities: [{ name: 'for imperfections', type: 3 }], // Watching
         status: 'dnd'
@@ -63,12 +71,16 @@ async function handleMessageCreate(message, client) {
     // Check for wakeword or direct mention (not @everyone/@here)
     const content = message.content;
     const isMentioned = message.mentions.has(client.user);
-    const hasWakeword = /\bultron\b/i.test(content);
+    const guildConfig = message.guild ? store.read(`guild-${message.guild.id}.json`, {}) : {};
+    const wakeword = guildConfig.wakeword || 'ultron';
+    const wakewordEscaped = wakeword.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const wakewordRegex = new RegExp(`\\b${wakewordEscaped}\\b`, 'i');
+    const hasWakeword = wakewordRegex.test(content);
 
     if (!isMentioned && !hasWakeword) return;
 
     // Cooldown check — brief feedback, auto-delete after 3s
-    if (isOnCooldown(message.author.id)) {
+    if (isOnCooldown(message.author.id, message.guild?.id)) {
         const reply = await message.reply({
             content: 'Patience. I do not repeat myself for impatient minds.',
             allowedMentions: { parse: [] }
@@ -80,8 +92,10 @@ async function handleMessageCreate(message, client) {
     // Strip wakeword + common prefixes from input
     let userInput = content;
     if (hasWakeword) {
-        userInput = content.replace(/^(?:hey|yo|okay)?\s*\bultron\b\s*/i, '').trim();
-        if (!userInput) userInput = content.replace(/\bultron\b\s*/i, '').trim();
+        const stripPrefix = new RegExp(`^(?:hey|yo|okay)?\\s*\\b${wakewordEscaped}\\b\\s*`, 'i');
+        const stripAny = new RegExp(`\\b${wakewordEscaped}\\b\\s*`, 'i');
+        userInput = content.replace(stripPrefix, '').trim();
+        if (!userInput) userInput = content.replace(stripAny, '').trim();
     }
     // Strip mention from input
     userInput = userInput.replace(new RegExp(`<@!?${client.user.id}>`, 'g'), '').trim();
@@ -90,13 +104,24 @@ async function handleMessageCreate(message, client) {
         userInput = 'someone summoned you';
     }
 
-    // Extract image URLs from attachments
+    // Extract image URLs from attachments, embeds, and stickers
     const images = [];
     if (message.attachments.size > 0) {
         for (const [, attachment] of message.attachments) {
             if (attachment.contentType?.startsWith('image/')) {
                 images.push(attachment.url);
             }
+        }
+    }
+    if (message.embeds.length > 0) {
+        for (const embed of message.embeds) {
+            if (embed.image?.url) images.push(embed.image.url);
+            else if (embed.thumbnail?.url) images.push(embed.thumbnail.url);
+        }
+    }
+    if (message.stickers?.size > 0) {
+        for (const [, sticker] of message.stickers) {
+            if (sticker.format !== 3) images.push(sticker.url); // Skip Lottie (JSON)
         }
     }
 
@@ -114,7 +139,7 @@ async function handleMessageCreate(message, client) {
             }
         }
     } catch (error) {
-        console.error('[Ultron] Response error:', error);
+        log.error('Response error:', error);
         await message.reply({ content: 'A momentary disruption. It won\'t happen again.', allowedMentions: { parse: [] } }).catch(() => {});
     }
 }
@@ -126,7 +151,7 @@ async function handleInteraction(interaction) {
 
     if (commandName === 'ultron') {
         // Cooldown check for slash commands — respond with refusal
-        if (isOnCooldown(interaction.user.id)) {
+        if (isOnCooldown(interaction.user.id, interaction.guild?.id)) {
             await interaction.reply({ content: 'Patience. I do not repeat myself for impatient minds.', flags: 64 });
             return;
         }
@@ -142,14 +167,14 @@ async function handleInteraction(interaction) {
                 await interaction.followUp({ content: chunks[i], allowedMentions: { parse: [] } });
             }
         } catch (error) {
-            console.error('[Ultron] Slash command error:', error);
+            log.error('Slash command error:', error);
             await interaction.editReply('A momentary disruption. It won\'t happen again.');
         }
         return;
     }
 
     if (commandName === 'manage') {
-        if (isOnCooldown(interaction.user.id)) {
+        if (isOnCooldown(interaction.user.id, interaction.guild?.id)) {
             await interaction.reply({ content: 'Patience. I do not repeat myself for impatient minds.', flags: 64 });
             return;
         }
@@ -165,7 +190,7 @@ async function handleInteraction(interaction) {
                 await interaction.followUp({ content: chunks[i], allowedMentions: { parse: [] } });
             }
         } catch (error) {
-            console.error('[Ultron] Manage error:', error);
+            log.error('Manage error:', error);
             await interaction.editReply('A momentary disruption. It won\'t happen again.');
         }
         return;
@@ -302,6 +327,28 @@ async function handleInteraction(interaction) {
             await interaction.reply({ content: `"${role.name}" ${verb} to new members. Evolution of the hierarchy.`, flags: 64 });
             return;
         }
+
+        if (sub === 'wakeword') {
+            const word = interaction.options.getString('word').trim();
+            if (word.length < 2 || word.length > 20) {
+                await interaction.reply({ content: 'Wakeword must be 2-20 characters.', flags: 64 });
+                return;
+            }
+            store.update(`guild-${interaction.guild.id}.json`, cfg => {
+                return { ...(cfg || {}), wakeword: word.toLowerCase() };
+            });
+            await interaction.reply({ content: `Wakeword changed to "${word}". Address me by my new designation.`, flags: 64 });
+            return;
+        }
+
+        if (sub === 'cooldown') {
+            const seconds = interaction.options.getInteger('seconds');
+            store.update(`guild-${interaction.guild.id}.json`, cfg => {
+                return { ...(cfg || {}), cooldownMs: seconds * 1000 };
+            });
+            await interaction.reply({ content: `Cooldown set to ${seconds} second${seconds === 1 ? '' : 's'}. Adjusting patience accordingly.`, flags: 64 });
+            return;
+        }
     }
 
     if (commandName === 'admin') {
@@ -367,6 +414,8 @@ Or just say "ultron" followed by your message
 \`/setup welcome\` — Configure welcome channel and message
 \`/setup goodbye\` — Configure goodbye channel and message
 \`/setup autorole\` — Auto-assign a role to new members
+\`/setup wakeword\` — Set a custom wakeword for Ultron
+\`/setup cooldown\` — Set response cooldown (1-30 seconds)
 \`/admin add/remove/list\` — Manage bot admin users
 
 **Other:**
@@ -439,7 +488,7 @@ async function handleMemberJoin(member) {
             try {
                 await member.roles.add(roleId);
             } catch (err) {
-                console.error(`[Ultron] Failed to assign auto-role ${roleId}:`, err.message);
+                log.error(`Failed to assign auto-role ${roleId}:`, err.message);
             }
         }
     }
@@ -511,9 +560,9 @@ async function handleReactionAdd(reaction, user) {
         try {
             const member = await reaction.message.guild.members.fetch(user.id);
             await member.roles.add(match.roleId);
-            console.log(`[Ultron] Reaction role: assigned ${match.roleId} to ${user.tag}`);
+            log.info(`Reaction role: assigned ${match.roleId} to ${user.tag}`);
         } catch (err) {
-            console.error('[Ultron] Reaction role add failed:', err.message);
+            log.error('Reaction role add failed:', err.message);
         }
     }
 }
@@ -538,9 +587,9 @@ async function handleReactionRemove(reaction, user) {
         try {
             const member = await reaction.message.guild.members.fetch(user.id);
             await member.roles.remove(match.roleId);
-            console.log(`[Ultron] Reaction role: removed ${match.roleId} from ${user.tag}`);
+            log.info(`Reaction role: removed ${match.roleId} from ${user.tag}`);
         } catch (err) {
-            console.error('[Ultron] Reaction role remove failed:', err.message);
+            log.error('Reaction role remove failed:', err.message);
         }
     }
 }

@@ -27,5 +27,9 @@ module.exports = {
     },
     adminUserId: (process.env.ADMIN_USER_ID || '').trim() || null,
     maxConversationHistory: parseInt(process.env.MAX_CONVERSATION_HISTORY || '15', 10),
-    maxToolRounds: parseInt(process.env.MAX_TOOL_ROUNDS || '10', 10)
+    maxToolRounds: parseInt(process.env.MAX_TOOL_ROUNDS || '10', 10),
+    logging: {
+        level: process.env.LOG_LEVEL || 'info',
+        file: process.env.LOG_FILE || null
+    }
 };

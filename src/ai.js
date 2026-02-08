@@ -5,6 +5,10 @@ const { getSystemPrompt } = require('./persona');
 const { toolDeclarations } = require('./tools');
 const { executeTool, getUserTier, TOOL_TIERS } = require('./tool-executor');
 const store = require('./store');
+const { createLogger } = require('./logger');
+const log = createLogger('Ultron');
+const groqLog = createLogger('Ultron/Groq');
+const geminiLog = createLogger('Ultron/Gemini');
 
 const genAI = new GoogleGenerativeAI(config.gemini.apiKey);
 const groq = config.groq.apiKey ? new Groq({ apiKey: config.groq.apiKey }) : null;
@@ -117,7 +121,7 @@ const BASE_TOOL_NAMES = new Set([
 
 // Keyword → category mapping for dynamic selection
 const CATEGORY_KEYWORDS = {
-    channel: /\b(?:channel|thread|archive|slow\s?mode|lock|unlock|nsfw|voice\s?limit|clone\s?channel|move\s?channel)\b/i,
+    channel: /\b(?:channel|thread|archive|slow\s?mode|lock|unlock|nsfw|voice\s?limit|clone\s?channel|move\s?channel|forum|post|stage|bitrate|region)\b/i,
     role: /\b(?:role|assign|give\s+role|remove\s+role)\b/i,
     moderation: /\b(?:kick|ban|unban|timeout|mute|unmute|nick(?:name)?|voice|disconnect|deafen)\b/i,
     message: /\b(?:message|send|purge|pin|unpin|embed|reply|react|poll|dm|direct\s+message)\b/i,
@@ -247,28 +251,28 @@ async function groqRequest(messages, tools, toolChoice) {
             const result = await groq.chat.completions.create(opts);
             if (modelIdx !== activeGroqModelIdx) {
                 activeGroqModelIdx = modelIdx;
-                console.log(`[Ultron/Groq] Switched to ${model}`);
+                groqLog.info(`Switched to ${model}`);
             }
             return result;
         } catch (err) {
             if (err.status === 429) {
-                console.log(`[Ultron/Groq] ${model} rate limited, trying next model...`);
+                groqLog.warn(`${model} rate limited, trying next model...`);
                 // Set a timer to reset back to preferred model after 60s
                 if (!groqResetTimer) {
                     groqResetTimer = setTimeout(() => {
                         activeGroqModelIdx = 0;
                         groqResetTimer = null;
-                        console.log('[Ultron/Groq] Reset to preferred model');
+                        groqLog.info('Reset to preferred model');
                     }, 60000);
                 }
                 continue;
             }
             if (err.status === 400) {
-                console.log(`[Ultron/Groq] ${model} rejected (${err.message?.slice(0, 80)}), trying next model...`);
+                groqLog.warn(`${model} rejected (${err.message?.slice(0, 80)}), trying next model...`);
                 continue;
             }
             if (err.status === 503) {
-                console.log(`[Ultron/Groq] ${model} 503 — retrying in 2s...`);
+                groqLog.warn(`${model} 503 — retrying in 2s...`);
                 await new Promise(r => setTimeout(r, 2000));
                 try { return await groq.chat.completions.create(opts); } catch (_) {}
                 continue;
@@ -293,7 +297,7 @@ async function generateWithGroq(systemPrompt, contents, message, userTier, userI
     const groqTools = convertToolsForGroq(selectedTools);
     const toolChoice = detectToolChoice(userInput);
 
-    console.log(`[Ultron/Groq] ${selectedTools.length}/${toolDeclarations.length} tools, choice=${toolChoice}`);
+    groqLog.info(`${selectedTools.length}/${toolDeclarations.length} tools, choice=${toolChoice}`);
 
     const toolLog = [];
     let rounds = 0;
@@ -314,11 +318,11 @@ async function generateWithGroq(systemPrompt, contents, message, userTier, userI
             const leakedCalls = parseLeakedToolCalls(content);
             if (leakedCalls.length > 0) {
                 leakedRounds++;
-                console.log(`[Ultron/Groq] Parsing ${leakedCalls.length} leaked tool call(s) (round ${leakedRounds})`);
+                groqLog.warn(`Parsing ${leakedCalls.length} leaked tool call(s) (round ${leakedRounds})`);
 
                 // After 2 consecutive leaked rounds, fall back to Gemini
                 if (leakedRounds >= 2) {
-                    console.log('[Ultron/Groq] Too many leaked rounds, falling back to Gemini');
+                    groqLog.warn('Too many leaked rounds, falling back to Gemini');
                     // Still execute the leaked calls before falling back
                     for (const lc of leakedCalls) {
                         try {
@@ -333,7 +337,7 @@ async function generateWithGroq(systemPrompt, contents, message, userTier, userI
 
                 const results = [];
                 for (const lc of leakedCalls) {
-                    console.log(`[Ultron/Groq] Tool (leaked): ${lc.name}(${JSON.stringify(lc.args)})`);
+                    groqLog.info(`Tool (leaked): ${lc.name}(${JSON.stringify(lc.args)})`);
                     let toolResult;
                     try {
                         toolResult = await executeTool(lc.name, lc.args, message);
@@ -365,7 +369,7 @@ async function generateWithGroq(systemPrompt, contents, message, userTier, userI
             const name = tc.function.name;
             let args = {};
             try { args = JSON.parse(tc.function.arguments || '{}'); } catch (_) {}
-            console.log(`[Ultron/Groq] Tool: ${name}(${JSON.stringify(args)})`);
+            groqLog.info(`Tool: ${name}(${JSON.stringify(args)})`);
 
             let toolResult;
             try {
@@ -413,10 +417,10 @@ async function generateWithGroqVision(systemPrompt, contents, images) {
             messages
         });
         const text = completion.choices[0]?.message?.content?.trim() || null;
-        console.log(`[Ultron] Vision response via Groq (${visionModel})`);
+        log.info(`Vision response via Groq (${visionModel})`);
         return { text, toolLog: [] };
     } catch (err) {
-        console.error(`[Ultron/Groq] Vision failed:`, err.message);
+        groqLog.error('Vision failed:', err.message);
         throw err;
     }
 }
@@ -499,7 +503,7 @@ async function generateWithGemini(systemPrompt, contents, message, images = [], 
                 const mimeType = res.headers.get('content-type') || 'image/jpeg';
                 imageParts.push({ inlineData: { mimeType, data: buffer.toString('base64') } });
             } catch (err) {
-                console.error('[Ultron/Gemini] Failed to fetch image:', err.message);
+                geminiLog.error('Failed to fetch image:', err.message);
             }
         }
         if (imageParts.length > 0) {
@@ -536,7 +540,7 @@ async function generateWithGemini(systemPrompt, contents, message, images = [], 
 
                 const functionResponses = [];
                 for (const fc of functionCalls) {
-                    console.log(`[Ultron/Gemini] Tool: ${fc.name}(${JSON.stringify(fc.args)})`);
+                    geminiLog.info(`Tool: ${fc.name}(${JSON.stringify(fc.args)})`);
                     let toolResult;
                     try {
                         toolResult = await executeTool(fc.name, fc.args, message);
@@ -555,14 +559,16 @@ async function generateWithGemini(systemPrompt, contents, message, images = [], 
 
             if (modelIdx !== activeGeminiModelIdx) {
                 activeGeminiModelIdx = modelIdx;
-                console.log(`[Ultron/Gemini] Switched to ${modelName}`);
+                geminiLog.info(`Switched to ${modelName}`);
             }
 
             const text = result.response.text()?.trim() || null;
             return { text, toolLog };
         } catch (err) {
             if (err.status === 429 || err.message?.includes('429') || err.message?.includes('Resource has been exhausted')) {
-                console.log(`[Ultron/Gemini] ${modelName} rate limited, trying next model...`);
+                const delay = Math.min(1000 * Math.pow(2, i), 16000);
+                geminiLog.warn(`${modelName} rate limited, waiting ${delay}ms before next model...`);
+                await new Promise(r => setTimeout(r, delay));
                 continue;
             }
             throw err;
@@ -625,10 +631,10 @@ async function generateResponse(message, userInput, images = []) {
             } else {
                 result = await generateWithGroq(systemPrompt, contents, message, userTier, userInput);
             }
-            if (result?.text) console.log(`[Ultron] Response via Groq (${hasImages ? 'vision' : getGroqModel()})`);
+            if (result?.text) log.info(`Response via Groq (${hasImages ? 'vision' : getGroqModel()})`);
         } catch (err) {
-            console.error('[Ultron] Groq failed:', err.message);
-            if (hasImages) console.log('[Ultron] Vision request — falling back to Gemini');
+            log.error('Groq failed:', err.message);
+            if (hasImages) log.info('Vision request — falling back to Gemini');
         }
     }
 
@@ -637,11 +643,11 @@ async function generateResponse(message, userInput, images = []) {
         const existingToolLog = result?.toolLog || [];
         try {
             result = await generateWithGemini(systemPrompt, contents, message, images, userTier, userInput);
-            if (result?.text) console.log('[Ultron] Response via Gemini');
+            if (result?.text) log.info('Response via Gemini');
             // Merge tool logs from leaked Groq calls + Gemini calls
             result.toolLog = [...existingToolLog, ...(result.toolLog || [])];
         } catch (err) {
-            console.error('[Ultron] Gemini failed:', err.message);
+            log.error('Gemini failed:', err.message);
             // Preserve any tool log from Groq leaked calls
             if (!result) result = { text: null, toolLog: existingToolLog };
         }

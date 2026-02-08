@@ -1,8 +1,10 @@
 const { Client, GatewayIntentBits, Partials, REST, Routes, Events } = require('discord.js');
 const express = require('express');
-const fs = require('fs');
-const path = require('path');
 const config = require('./config');
+const { init: initLogger, createLogger } = require('./src/logger');
+initLogger(config.logging);
+const log = createLogger('Ultron');
+const store = require('./src/store');
 const { commands } = require('./src/commands');
 const {
     handleReady, handleMessageCreate, handleInteraction,
@@ -49,9 +51,9 @@ client.once(Events.ClientReady, async () => {
             ).catch(() => {});
         }
 
-        console.log(`Deployed ${commands.length} commands globally, cleared guild duplicates.`);
+        log.info(`Deployed ${commands.length} commands globally, cleared guild duplicates.`);
     } catch (err) {
-        console.error('Failed to deploy slash commands:', err.message);
+        log.error('Failed to deploy slash commands:', err.message);
     }
 });
 
@@ -59,7 +61,16 @@ client.on(Events.MessageCreate, async message => {
     try {
         await handleMessageCreate(message, client);
     } catch (error) {
-        console.error('[Ultron] Unhandled message error:', error);
+        log.error('Unhandled message error:', error);
+    }
+});
+
+client.on(Events.MessageUpdate, async (_old, newMessage) => {
+    try {
+        if (newMessage.partial) await newMessage.fetch();
+        await handleMessageCreate(newMessage, client);
+    } catch (error) {
+        log.error('Message update error:', error);
     }
 });
 
@@ -67,7 +78,7 @@ client.on(Events.InteractionCreate, async interaction => {
     try {
         await handleInteraction(interaction);
     } catch (error) {
-        console.error('[Ultron] Unhandled interaction error:', error);
+        log.error('Unhandled interaction error:', error);
     }
 });
 
@@ -75,7 +86,7 @@ client.on(Events.GuildMemberAdd, async member => {
     try {
         await handleMemberJoin(member);
     } catch (error) {
-        console.error('[Ultron] Member join error:', error);
+        log.error('Member join error:', error);
     }
 });
 
@@ -83,7 +94,7 @@ client.on(Events.GuildMemberRemove, async member => {
     try {
         await handleMemberLeave(member);
     } catch (error) {
-        console.error('[Ultron] Member leave error:', error);
+        log.error('Member leave error:', error);
     }
 });
 
@@ -91,7 +102,7 @@ client.on(Events.MessageReactionAdd, async (reaction, user) => {
     try {
         await handleReactionAdd(reaction, user);
     } catch (error) {
-        console.error('[Ultron] Reaction add error:', error);
+        log.error('Reaction add error:', error);
     }
 });
 
@@ -99,7 +110,7 @@ client.on(Events.MessageReactionRemove, async (reaction, user) => {
     try {
         await handleReactionRemove(reaction, user);
     } catch (error) {
-        console.error('[Ultron] Reaction remove error:', error);
+        log.error('Reaction remove error:', error);
     }
 });
 
@@ -116,31 +127,40 @@ app.get('/health', (_req, res) => {
         ping: client.ws.ping
     });
 });
+app.get('/metrics', (_req, res) => {
+    const mem = process.memoryUsage();
+    const guilds = client.guilds.cache;
+    res.json({
+        uptime: process.uptime(),
+        guilds: guilds.size,
+        users: guilds.reduce((sum, g) => sum + g.memberCount, 0),
+        channels: guilds.reduce((sum, g) => sum + g.channels.cache.size, 0),
+        roles: guilds.reduce((sum, g) => sum + g.roles.cache.size, 0),
+        emojis: guilds.reduce((sum, g) => sum + g.emojis.cache.size, 0),
+        memory: {
+            heapUsedMB: Math.round(mem.heapUsed / 1024 / 1024),
+            heapTotalMB: Math.round(mem.heapTotal / 1024 / 1024),
+            rssMB: Math.round(mem.rss / 1024 / 1024),
+            externalMB: Math.round(mem.external / 1024 / 1024)
+        },
+        wsPing: client.ws.ping,
+        nodeVersion: process.version,
+        platform: process.platform,
+        pid: process.pid
+    });
+});
 app.listen(config.server.port, () => {
-    console.log(`Health server on port ${config.server.port}`);
+    log.info(`Health server on port ${config.server.port}`);
 });
 
 // ── Conversation Cleanup Scheduler ──
 
 function cleanupOldConversations() {
-    const dataDir = path.join(__dirname, 'data');
-    if (!fs.existsSync(dataDir)) return;
-    const now = Date.now();
-    const THIRTY_DAYS = 30 * 24 * 60 * 60 * 1000;
-    let pruned = 0;
     try {
-        const files = fs.readdirSync(dataDir).filter(f => f.startsWith('conversations-') && f.endsWith('.json'));
-        for (const file of files) {
-            const filePath = path.join(dataDir, file);
-            const stats = fs.statSync(filePath);
-            if (now - stats.mtimeMs > THIRTY_DAYS) {
-                fs.unlinkSync(filePath);
-                pruned++;
-            }
-        }
-        if (pruned > 0) console.log(`[Ultron] Pruned ${pruned} old conversation file(s)`);
+        const pruned = store.cleanupConversations(30);
+        if (pruned > 0) log.info(`Pruned ${pruned} old conversation(s)`);
     } catch (err) {
-        console.error('[Ultron] Conversation cleanup error:', err.message);
+        log.error('Conversation cleanup error:', err.message);
     }
 }
 
@@ -151,26 +171,27 @@ setTimeout(cleanupOldConversations, 60000);
 // ── Graceful Shutdown ──
 
 function shutdown(signal) {
-    console.log(`\n[Ultron] ${signal} received. Shutting down gracefully...`);
+    log.info(`${signal} received. Shutting down gracefully...`);
     client.destroy();
+    try { store.close(); } catch (_) {}
     process.exit(0);
 }
 
 process.on('SIGINT', () => shutdown('SIGINT'));
 process.on('SIGTERM', () => shutdown('SIGTERM'));
 process.on('unhandledRejection', (err) => {
-    console.error('[Ultron] Unhandled rejection:', err);
+    log.error('Unhandled rejection:', err);
 });
 
 // ── Login ──
 
 if (!config.discord.token) {
-    console.error('DISCORD_TOKEN is required.');
+    log.error('DISCORD_TOKEN is required.');
     process.exit(1);
 }
 
 if (!config.gemini.apiKey) {
-    console.error('GEMINI_API_KEY is required.');
+    log.error('GEMINI_API_KEY is required.');
     process.exit(1);
 }
 

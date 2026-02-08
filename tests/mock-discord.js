@@ -72,10 +72,18 @@ function createMockChannel(guild, id, name, type = ChannelType.GuildText) {
 
         threads: {
             async create(opts) {
-                const thread = createMockChannel(guild, `thread-${Date.now()}`, opts.name, ChannelType.PublicThread);
+                const threadName = typeof opts === 'string' ? opts : (opts.name || opts.message?.content?.slice(0, 20) || 'thread');
+                const thread = createMockChannel(guild, `thread-${Date.now()}`, threadName, ChannelType.PublicThread);
+                thread.parent = channel;
+                thread.messageCount = 0;
+                thread.archived = false;
                 thread.send = async () => {};
                 guild.channels.cache.set(thread.id, thread);
                 return thread;
+            },
+            async fetchActive() {
+                const threads = guild.channels.cache.filter(c => c.isThread() && c.parent === channel);
+                return { threads };
             }
         },
 
@@ -92,6 +100,9 @@ function createMockChannel(guild, id, name, type = ChannelType.GuildText) {
         async setRateLimitPerUser() {},
         async setNSFW() {},
         async setUserLimit() {},
+        async setBitrate(b) { channel.bitrate = b; },
+        async setRTCRegion(r) { channel.rtcRegion = r; },
+        stageInstance: null,
         async clone(opts) {
             const cloned = createMockChannel(guild, `clone-${Date.now()}`, opts?.name || this.name + '-clone', this.type);
             guild.channels.cache.set(cloned.id, cloned);
@@ -162,6 +173,10 @@ function createMockGuild(id = '123456789', name = 'Test Guild') {
                 const ch = createMockChannel(guild, `ch-${Date.now()}`, opts.name, opts.type || ChannelType.GuildText);
                 guild.channels.cache.set(ch.id, ch);
                 return ch;
+            },
+            async fetchActiveThreads() {
+                const threads = guild.channels.cache.filter(c => c.isThread());
+                return { threads };
             }
         },
 
@@ -244,6 +259,7 @@ function createMockGuild(id = '123456789', name = 'Test Guild') {
         _bans: new Collection(),
         _invites: new Collection(),
         _webhooks: new Collection(),
+        _auditEntries: [],
 
         async setName(n) { this.name = n; },
         async setIcon() {},
@@ -258,8 +274,36 @@ function createMockGuild(id = '123456789', name = 'Test Guild') {
         async fetchOwner() {
             return guild.members.cache.get(guild.ownerId) || createMockMember(guild, guild.ownerId, 'Owner');
         },
-        async fetchAuditLogs() {
-            return { entries: new Collection() };
+        stickers: {
+            cache: new Collection(),
+            async create(opts) {
+                const sticker = {
+                    id: `sticker-${Date.now()}`, name: opts.name, tags: opts.tags,
+                    format: 1, description: opts.description || '',
+                    async delete() { guild.stickers.cache.delete(this.id); }
+                };
+                guild.stickers.cache.set(sticker.id, sticker);
+                return sticker;
+            }
+        },
+
+        stageInstances: {
+            async create(channel, opts) {
+                const instance = { topic: opts.topic, channel };
+                channel.stageInstance = instance;
+                return instance;
+            }
+        },
+
+        async fetchAuditLogs(opts) {
+            const entries = new Collection();
+            if (guild._auditEntries) {
+                let filtered = [...guild._auditEntries];
+                if (opts?.type !== undefined) filtered = filtered.filter(e => e._type === opts.type);
+                const limit = opts?.limit || 10;
+                filtered.slice(0, limit).forEach(e => entries.set(e.id, e));
+            }
+            return { entries };
         },
         async fetchWebhooks() { return guild._webhooks; }
     };
@@ -282,10 +326,14 @@ function createMockEnvironment() {
     const announcements = createMockChannel(guild, '222222222', 'announcements', ChannelType.GuildText);
     const voice = createMockChannel(guild, '333333333', 'voice-chat', ChannelType.GuildVoice);
     const category = createMockChannel(guild, '444444444', 'Text Channels', ChannelType.GuildCategory);
+    const forum = createMockChannel(guild, '555555550', 'forum-chat', ChannelType.GuildForum);
+    const stage = createMockChannel(guild, '555555551', 'stage-talk', ChannelType.GuildStageVoice);
     guild.channels.cache.set('111111111', general);
     guild.channels.cache.set('222222222', announcements);
     guild.channels.cache.set('333333333', voice);
     guild.channels.cache.set('444444444', category);
+    guild.channels.cache.set('555555550', forum);
+    guild.channels.cache.set('555555551', stage);
 
     // Roles
     const adminRole = createMockRole(guild, '555555555', 'Admin', 10);
@@ -319,7 +367,7 @@ function createMockEnvironment() {
 
     return {
         guild,
-        channels: { general, announcements, voice, category },
+        channels: { general, announcements, voice, category, forum, stage },
         roles: { adminRole, modRole, memberRole },
         members: { owner, admin, mod, user, bot }
     };

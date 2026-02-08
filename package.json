@@ -6,7 +6,8 @@
     "scripts": {
         "start": "node index.js",
         "deploy": "node src/deploy-commands.js",
-        "test": "node --test tests/*.test.js"
+        "test": "node --test tests/*.test.js",
+        "migrate": "node scripts/migrate-to-sqlite.js"
     },
     "keywords": [
         "discord",
@@ -17,6 +18,7 @@
     "license": "ISC",
     "dependencies": {
         "@google/generative-ai": "^0.24.1",
+        "better-sqlite3": "^11.10.0",
         "discord.js": "^14.22.1",
         "dotenv": "^17.2.3",
         "express": "^4.18.2",

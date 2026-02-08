@@ -30,7 +30,7 @@ require.cache[gaiPath] = {
 };
 
 // Now import (gets mocked store + config)
-const { executeTool, getUserTier, TOOL_TIERS } = require('../src/tool-executor');
+const { executeTool, getUserTier, TOOL_TIERS, _resetRateLimits } = require('../src/tool-executor');
 const { selectToolsForMessage, detectToolChoice } = require('../src/ai');
 const { createMockEnvironment, createMessage } = require('./mock-discord');
 
@@ -40,6 +40,7 @@ let env;
 function resetEnv() {
     env = createMockEnvironment();
     mockStore.clear();
+    _resetRateLimits();
 }
 
 function msg(member) { return createMessage(env, member || env.members.admin); }
@@ -1245,5 +1246,305 @@ describe('List Pagination', () => {
         const msg = createMessage(env, env.members.admin);
         const result = await executeTool('listChannels', { limit: 2 }, msg);
         assert.ok(result.showing <= 2);
+    });
+});
+
+// ═══════════════════════════════════════════════════════════════
+// Forum Channel Tools
+// ═══════════════════════════════════════════════════════════════
+
+describe('Forum Channel Tools', () => {
+    beforeEach(resetEnv);
+
+    test('createForumPost — success', async () => {
+        const result = await executeTool('createForumPost', {
+            channel: 'forum-chat', title: 'Test Post', content: 'Post content here'
+        }, msg());
+        assert.ok(result.success);
+        assert.strictEqual(result.channel, 'forum-chat');
+    });
+
+    test('createForumPost — not a forum channel', async () => {
+        const result = await executeTool('createForumPost', {
+            channel: 'general', title: 'Test', content: 'text'
+        }, msg());
+        assert.ok(result.error);
+        assert.ok(result.error.includes('not a forum'));
+    });
+
+    test('listForumPosts — success', async () => {
+        // Create a post first
+        await executeTool('createForumPost', {
+            channel: 'forum-chat', title: 'Post1', content: 'content'
+        }, msg());
+        const result = await executeTool('listForumPosts', { channel: 'forum-chat' }, msg());
+        assert.ok(result.posts);
+        assert.ok(result.total >= 1);
+    });
+});
+
+// ═══════════════════════════════════════════════════════════════
+// Stage Channel Tools
+// ═══════════════════════════════════════════════════════════════
+
+describe('Stage Channel Tools', () => {
+    beforeEach(resetEnv);
+
+    test('createStageInstance — success', async () => {
+        const result = await executeTool('createStageInstance', {
+            channel: 'stage-talk', topic: 'AMA Session'
+        }, msg());
+        assert.ok(result.success);
+        assert.strictEqual(result.topic, 'AMA Session');
+    });
+
+    test('createStageInstance — not a stage channel', async () => {
+        const result = await executeTool('createStageInstance', {
+            channel: 'general', topic: 'test'
+        }, msg());
+        assert.ok(result.error);
+        assert.ok(result.error.includes('not a stage'));
+    });
+
+    test('endStageInstance — success', async () => {
+        await executeTool('createStageInstance', {
+            channel: 'stage-talk', topic: 'AMA Session'
+        }, msg());
+        const stageChannel = env.guild.channels.cache.get('555555551');
+        stageChannel.stageInstance.delete = async () => { stageChannel.stageInstance = null; };
+        const result = await executeTool('endStageInstance', { channel: 'stage-talk' }, msg());
+        assert.ok(result.success);
+    });
+
+    test('endStageInstance — no active stage', async () => {
+        const result = await executeTool('endStageInstance', { channel: 'stage-talk' }, msg());
+        assert.ok(result.error);
+        assert.ok(result.error.includes('No active stage'));
+    });
+});
+
+// ═══════════════════════════════════════════════════════════════
+// Sticker Management
+// ═══════════════════════════════════════════════════════════════
+
+describe('Sticker Management', () => {
+    beforeEach(resetEnv);
+
+    test('addSticker — success', async () => {
+        const result = await executeTool('addSticker', {
+            name: 'cool', url: 'https://example.com/sticker.png', tags: 'thumbsup'
+        }, msg());
+        assert.ok(result.success);
+        assert.strictEqual(result.name, 'cool');
+    });
+
+    test('removeSticker — success', async () => {
+        await executeTool('addSticker', {
+            name: 'cool', url: 'https://example.com/sticker.png', tags: 'thumbsup'
+        }, msg());
+        const result = await executeTool('removeSticker', { name: 'cool' }, msg());
+        assert.ok(result.success);
+    });
+
+    test('removeSticker — not found', async () => {
+        const result = await executeTool('removeSticker', { name: 'nonexistent' }, msg());
+        assert.ok(result.error);
+    });
+
+    test('listStickers — returns list', async () => {
+        await executeTool('addSticker', {
+            name: 'stickerA', url: 'https://example.com/a.png', tags: 'wave'
+        }, msg());
+        const result = await executeTool('listStickers', {}, msg());
+        assert.ok(result.stickers);
+        assert.ok(result.total >= 1);
+    });
+});
+
+// ═══════════════════════════════════════════════════════════════
+// Temp Ban
+// ═══════════════════════════════════════════════════════════════
+
+describe('Temp Ban', () => {
+    beforeEach(resetEnv);
+
+    test('tempBan — success', async () => {
+        const result = await executeTool('tempBan', {
+            user: 'RegularUser', duration: '1h', reason: 'Testing'
+        }, msg());
+        assert.ok(result.success);
+        assert.strictEqual(result.duration, '1h');
+        assert.strictEqual(result.autoUnban, true);
+    });
+
+    test('tempBan — invalid duration', async () => {
+        const result = await executeTool('tempBan', {
+            user: 'RegularUser', duration: 'forever'
+        }, msg());
+        assert.ok(result.error);
+        assert.ok(result.error.includes('Invalid duration'));
+    });
+
+    test('tempBan — exceeds 30 days', async () => {
+        const result = await executeTool('tempBan', {
+            user: 'RegularUser', duration: '31d'
+        }, msg());
+        assert.ok(result.error);
+        assert.ok(result.error.includes('30 days'));
+    });
+
+    test('tempBan — user not found', async () => {
+        const result = await executeTool('tempBan', {
+            user: 'Ghost', duration: '1h'
+        }, msg());
+        assert.ok(result.error);
+    });
+});
+
+// ═══════════════════════════════════════════════════════════════
+// Bulk Role Assignment
+// ═══════════════════════════════════════════════════════════════
+
+describe('Bulk Role Assignment', () => {
+    beforeEach(resetEnv);
+
+    test('bulkAssignRole — success', async () => {
+        const result = await executeTool('bulkAssignRole', {
+            role: 'Member', users: 'RegularUser, ModUser'
+        }, msg());
+        assert.ok(result.success);
+        assert.ok(result.assigned.length >= 1);
+    });
+
+    test('bulkAssignRole — role not found', async () => {
+        const result = await executeTool('bulkAssignRole', {
+            role: 'NonexistentRole', users: 'RegularUser'
+        }, msg());
+        assert.ok(result.error);
+    });
+
+    test('bulkAssignRole — no users', async () => {
+        const result = await executeTool('bulkAssignRole', {
+            role: 'Member', users: ''
+        }, msg());
+        assert.ok(result.error);
+    });
+});
+
+// ═══════════════════════════════════════════════════════════════
+// Voice Configuration
+// ═══════════════════════════════════════════════════════════════
+
+describe('Voice Configuration', () => {
+    beforeEach(resetEnv);
+
+    test('setVoiceBitrate — success', async () => {
+        const result = await executeTool('setVoiceBitrate', {
+            channel: 'voice-chat', bitrate: 96000
+        }, msg());
+        assert.ok(result.success);
+        assert.strictEqual(result.bitrate, 96000);
+    });
+
+    test('setVoiceBitrate — not a voice channel', async () => {
+        const result = await executeTool('setVoiceBitrate', {
+            channel: 'general', bitrate: 96000
+        }, msg());
+        assert.ok(result.error);
+    });
+
+    test('setVoiceBitrate — out of range', async () => {
+        const result = await executeTool('setVoiceBitrate', {
+            channel: 'voice-chat', bitrate: 999999
+        }, msg());
+        assert.ok(result.error);
+        assert.ok(result.error.includes('8000'));
+    });
+
+    test('setVoiceRegion — success', async () => {
+        const result = await executeTool('setVoiceRegion', {
+            channel: 'voice-chat', region: 'us-east'
+        }, msg());
+        assert.ok(result.success);
+        assert.strictEqual(result.region, 'us-east');
+    });
+
+    test('setVoiceRegion — automatic', async () => {
+        const result = await executeTool('setVoiceRegion', {
+            channel: 'voice-chat', region: 'automatic'
+        }, msg());
+        assert.ok(result.success);
+        assert.strictEqual(result.region, 'automatic');
+    });
+});
+
+// ═══════════════════════════════════════════════════════════════
+// Audit Log By Action
+// ═══════════════════════════════════════════════════════════════
+
+describe('Audit Log By Action', () => {
+    beforeEach(resetEnv);
+
+    test('getAuditLogByAction — returns entries', async () => {
+        const result = await executeTool('getAuditLogByAction', {
+            actionType: 'MemberBanAdd', limit: 5
+        }, msg());
+        assert.ok(result.entries);
+    });
+
+    test('getAuditLogByAction — unknown action', async () => {
+        const result = await executeTool('getAuditLogByAction', {
+            actionType: 'FakeAction'
+        }, msg());
+        assert.ok(result.error);
+        assert.ok(result.error.includes('Unknown action type'));
+    });
+});
+
+// ═══════════════════════════════════════════════════════════════
+// List Threads
+// ═══════════════════════════════════════════════════════════════
+
+describe('List Threads', () => {
+    beforeEach(resetEnv);
+
+    test('listThreads — all server threads', async () => {
+        const result = await executeTool('listThreads', {}, msg());
+        assert.ok(result.threads);
+        assert.strictEqual(typeof result.total, 'number');
+    });
+
+    test('listThreads — specific channel', async () => {
+        const result = await executeTool('listThreads', { channel: 'general' }, msg());
+        assert.ok(result.threads);
+    });
+
+    test('listThreads — channel not found', async () => {
+        const result = await executeTool('listThreads', { channel: 'nonexistent' }, msg());
+        assert.ok(result.error);
+    });
+});
+
+// ═══════════════════════════════════════════════════════════════
+// Reliability — Size Limits
+// ═══════════════════════════════════════════════════════════════
+
+describe('Size Limits', () => {
+    beforeEach(resetEnv);
+
+    test('saveMemory — rejects >4000 chars', async () => {
+        const result = await executeTool('saveMemory', {
+            key: 'huge', value: 'x'.repeat(4001)
+        }, msg());
+        assert.ok(result.error);
+        assert.ok(result.error.includes('4000'));
+    });
+
+    test('createDocument — rejects >50000 chars', async () => {
+        const result = await executeTool('createDocument', {
+            name: 'hugedoc', content: 'x'.repeat(50001)
+        }, msg());
+        assert.ok(result.error);
+        assert.ok(result.error.includes('50000'));
     });
 });

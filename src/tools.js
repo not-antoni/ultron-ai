@@ -1194,6 +1194,204 @@ const toolDeclarations = [
             },
             required: ['url']
         }
+    },
+
+    // ── Forum Channel Tools ──
+
+    {
+        name: 'createForumPost',
+        category: 'channel',
+        description: 'Create a post in a forum channel',
+        parameters: {
+            type: SchemaType.OBJECT,
+            properties: {
+                channel: { type: SchemaType.STRING, description: 'Forum channel name or ID' },
+                title: { type: SchemaType.STRING, description: 'Post title' },
+                content: { type: SchemaType.STRING, description: 'Post content' }
+            },
+            required: ['channel', 'title', 'content']
+        }
+    },
+    {
+        name: 'listForumPosts',
+        category: 'info',
+        description: 'List active posts in a forum channel',
+        parameters: {
+            type: SchemaType.OBJECT,
+            properties: {
+                channel: { type: SchemaType.STRING, description: 'Forum channel name or ID' },
+                limit: { type: SchemaType.NUMBER, description: 'Max posts to list (1-25)' }
+            },
+            required: ['channel']
+        }
+    },
+
+    // ── Stage Channel Tools ──
+
+    {
+        name: 'createStageInstance',
+        category: 'channel',
+        description: 'Start a stage instance in a stage channel',
+        parameters: {
+            type: SchemaType.OBJECT,
+            properties: {
+                channel: { type: SchemaType.STRING, description: 'Stage channel name or ID' },
+                topic: { type: SchemaType.STRING, description: 'Stage topic' }
+            },
+            required: ['channel', 'topic']
+        }
+    },
+    {
+        name: 'endStageInstance',
+        category: 'channel',
+        description: 'End an active stage instance',
+        parameters: {
+            type: SchemaType.OBJECT,
+            properties: {
+                channel: { type: SchemaType.STRING, description: 'Stage channel name or ID' }
+            },
+            required: ['channel']
+        }
+    },
+
+    // ── Sticker Management ──
+
+    {
+        name: 'addSticker',
+        category: 'config',
+        description: 'Upload a sticker to the server from a URL',
+        parameters: {
+            type: SchemaType.OBJECT,
+            properties: {
+                name: { type: SchemaType.STRING, description: 'Sticker name' },
+                description: { type: SchemaType.STRING, description: 'Sticker description' },
+                url: { type: SchemaType.STRING, description: 'Image URL (PNG or APNG)' },
+                tags: { type: SchemaType.STRING, description: 'Related emoji name for search' }
+            },
+            required: ['name', 'url', 'tags']
+        }
+    },
+    {
+        name: 'removeSticker',
+        category: 'config',
+        description: 'Remove a sticker by name',
+        parameters: {
+            type: SchemaType.OBJECT,
+            properties: {
+                name: { type: SchemaType.STRING, description: 'Sticker name' }
+            },
+            required: ['name']
+        }
+    },
+    {
+        name: 'listStickers',
+        category: 'info',
+        description: 'List all server stickers',
+        parameters: {
+            type: SchemaType.OBJECT,
+            properties: {}
+        }
+    },
+
+    // ── Extended Moderation ──
+
+    {
+        name: 'tempBan',
+        category: 'moderation',
+        description: 'Ban a member for a specified duration then auto-unban',
+        parameters: {
+            type: SchemaType.OBJECT,
+            properties: {
+                user: { type: SchemaType.STRING, description: 'Username or user ID' },
+                duration: { type: SchemaType.STRING, description: 'Duration (e.g. 1h, 6h, 1d, 7d)' },
+                reason: { type: SchemaType.STRING, description: 'Reason for the ban' }
+            },
+            required: ['user', 'duration']
+        }
+    },
+
+    // ── Bulk Operations ──
+
+    {
+        name: 'bulkAssignRole',
+        category: 'role',
+        description: 'Assign a role to multiple members at once',
+        parameters: {
+            type: SchemaType.OBJECT,
+            properties: {
+                role: { type: SchemaType.STRING, description: 'Role name or ID' },
+                users: { type: SchemaType.STRING, description: 'Comma-separated usernames or IDs' }
+            },
+            required: ['role', 'users']
+        }
+    },
+
+    // ── Voice Configuration ──
+
+    {
+        name: 'setVoiceBitrate',
+        category: 'channel',
+        description: 'Set bitrate for a voice channel (8000-384000)',
+        parameters: {
+            type: SchemaType.OBJECT,
+            properties: {
+                channel: { type: SchemaType.STRING, description: 'Voice channel name or ID' },
+                bitrate: { type: SchemaType.NUMBER, description: 'Bitrate in bps (8000-384000)' }
+            },
+            required: ['channel', 'bitrate']
+        }
+    },
+    {
+        name: 'setVoiceRegion',
+        category: 'channel',
+        description: 'Set RTC region for a voice channel',
+        parameters: {
+            type: SchemaType.OBJECT,
+            properties: {
+                channel: { type: SchemaType.STRING, description: 'Voice channel name or ID' },
+                region: { type: SchemaType.STRING, description: 'Region (automatic, us-east, us-central, us-south, us-west, europe, brazil, hongkong, india, japan, russia, singapore, southafrica, sydney)' }
+            },
+            required: ['channel']
+        }
+    },
+
+    // ── Enhanced Info ──
+
+    {
+        name: 'getAuditLogByAction',
+        category: 'info',
+        description: 'Get audit log entries filtered by action type',
+        parameters: {
+            type: SchemaType.OBJECT,
+            properties: {
+                actionType: { type: SchemaType.STRING, description: 'Action type (e.g. MemberBanAdd, ChannelCreate, RoleUpdate, MessageDelete)' },
+                limit: { type: SchemaType.NUMBER, description: 'Entries to fetch (1-25)' }
+            },
+            required: ['actionType']
+        }
+    },
+    {
+        name: 'listThreads',
+        category: 'info',
+        description: 'List all active threads in the server or a specific channel',
+        parameters: {
+            type: SchemaType.OBJECT,
+            properties: {
+                channel: { type: SchemaType.STRING, description: 'Channel to list threads from (optional)' }
+            }
+        }
+    },
+    {
+        name: 'getToolAuditTrail',
+        category: 'info',
+        description: 'View the audit trail of tool executions in this server',
+        parameters: {
+            type: SchemaType.OBJECT,
+            properties: {
+                limit: { type: SchemaType.STRING, description: 'Max entries to return (default 25, max 50)' },
+                toolName: { type: SchemaType.STRING, description: 'Filter by tool name (optional)' }
+            }
+        }
     }
 ];
 

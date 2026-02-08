@@ -1,5 +1,7 @@
 const { PermissionsBitField } = require('discord.js');
 const store = require('./store');
+const { createLogger } = require('./logger');
+const log = createLogger('Filter');
 
 function getFilters(guildId) {
     return store.read(`filters-${guildId}.json`, []);
@@ -9,6 +11,20 @@ function saveFilters(guildId, filters) {
     store.write(`filters-${guildId}.json`, filters);
 }
 
+function isRegexSafe(pattern) {
+    if (pattern.length > 200) return false;
+    // Reject nested quantifiers (common ReDoS patterns)
+    if (/(\+|\*)\s*\)?\s*(\+|\*|\{)/.test(pattern)) return false;
+    try {
+        const regex = new RegExp(pattern, 'i');
+        const start = Date.now();
+        regex.test('a'.repeat(100));
+        return Date.now() - start < 50;
+    } catch {
+        return false;
+    }
+}
+
 function addFilter(guildId, { pattern, action, reason, createdBy, bypassRoles }) {
     const filters = getFilters(guildId);
     // Validate regex
@@ -16,6 +32,9 @@ function addFilter(guildId, { pattern, action, reason, createdBy, bypassRoles })
         new RegExp(pattern, 'i');
     } catch {
         return { success: false, error: 'Invalid regex pattern.' };
+    }
+    if (!isRegexSafe(pattern)) {
+        return { success: false, error: 'Pattern rejected — too complex or potentially dangerous regex.' };
     }
     const id = filters.length > 0 ? Math.max(...filters.map(f => f.id)) + 1 : 1;
     const filter = {
@@ -83,7 +102,7 @@ async function processMessage(message) {
         } catch { continue; }
 
         // Match found — execute action
-        console.log(`[Filter] Match: "${filter.pattern}" in guild ${message.guild.id} by ${message.author.username}`);
+        log.info(`Match: "${filter.pattern}" in guild ${message.guild.id} by ${message.author.username}`);
 
         switch (filter.action) {
             case 'delete':

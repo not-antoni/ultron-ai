@@ -1,5 +1,7 @@
-const { ChannelType, PermissionsBitField, GuildVerificationLevel, AutoModerationRuleTriggerType, AutoModerationActionType, AutoModerationRuleEventType, GuildScheduledEventPrivacyLevel, GuildScheduledEventEntityType, EmbedBuilder, GuildDefaultMessageNotifications, PollLayoutType } = require('discord.js');
+const { ChannelType, PermissionsBitField, GuildVerificationLevel, AutoModerationRuleTriggerType, AutoModerationActionType, AutoModerationRuleEventType, GuildScheduledEventPrivacyLevel, GuildScheduledEventEntityType, EmbedBuilder, GuildDefaultMessageNotifications, PollLayoutType, AuditLogEvent } = require('discord.js');
 const store = require('./store');
+const { createLogger } = require('./logger');
+const log = createLogger('Ultron');
 
 // ── Resolvers ──
 
@@ -20,7 +22,10 @@ function resolveRole(guild, nameOrId) {
     const cleaned = nameOrId.toLowerCase();
     return guild.roles.cache.find(r => r.id === nameOrId || r.name.toLowerCase() === cleaned)
         || guild.roles.cache.find(r => r.name.toLowerCase().startsWith(cleaned))
-        || guild.roles.cache.find(r => r.name.toLowerCase().includes(cleaned))
+        || guild.roles.cache.find(r => {
+            const name = r.name.toLowerCase();
+            return name.includes(cleaned) && cleaned.length >= name.length * 0.5;
+        })
         || null;
 }
 
@@ -74,7 +79,8 @@ const TOOL_TIERS = {
     listMemories: 1, listAutomodRules: 1, getAuditLog: 1, listWebhooks: 1,
     listScheduledEvents: 1, listChannelPermissions: 1,
     readMessages: 1, fetchMessage: 1, listEmojis: 1, listReactionRoles: 1,
-    listBans: 1,
+    listBans: 1, listForumPosts: 1, listStickers: 1, getAuditLogByAction: 1, listThreads: 1,
+    getToolAuditTrail: 1,
 
     // Tier 2 — Moderator (constructive / moderate actions)
     createChannel: 2, renameChannel: 2, setChannelTopic: 2,
@@ -95,13 +101,15 @@ const TOOL_TIERS = {
     setSystemChannel: 2, setRulesChannel: 2,
     setupReactionRole: 2, removeReactionRole: 2,
     setWelcomeChannel: 2, setGoodbyeChannel: 2, setAutoRole: 2,
+    createForumPost: 2, createStageInstance: 2, endStageInstance: 2,
+    addSticker: 2, bulkAssignRole: 2, setVoiceBitrate: 2, setVoiceRegion: 2,
 
     // Tier 3 — Admin (destructive / dangerous)
     kickMember: 3, banMember: 3, unbanMember: 3, disconnectFromVoice: 3,
     deleteChannel: 3, deleteRole: 3, purgeMessages: 3,
     updateServerName: 3, updateServerIcon: 3, setVerificationLevel: 3,
     deleteInvite: 3, createAutomodRule: 3, deleteAutomodRule: 3,
-    deleteWebhook: 3, deleteDocument: 3,
+    deleteWebhook: 3, deleteDocument: 3, tempBan: 3, removeSticker: 3,
     setAFKChannel: 3, setDefaultNotifications: 3, setServerBanner: 3
 };
 
@@ -712,8 +720,14 @@ const tools = {
     // ── Documents ──
 
     async createDocument(args, message) {
+        if (args.content && args.content.length > 50000) {
+            return { error: 'Document too large. Maximum 50000 characters.' };
+        }
         const guildId = message.guild.id;
         const docs = store.read(`documents-${guildId}.json`, []);
+        if (docs.length >= 50 && !docs.find(d => d.name.toLowerCase() === args.name.toLowerCase())) {
+            return { error: 'Document limit reached (50). Delete some first.' };
+        }
         if (docs.find(d => d.name.toLowerCase() === args.name.toLowerCase())) {
             return { error: `Document "${args.name}" already exists. Use editDocument to modify.` };
         }
@@ -723,6 +737,9 @@ const tools = {
     },
 
     async editDocument(args, message) {
+        if (args.content && args.content.length > 50000) {
+            return { error: 'Document too large. Maximum 50000 characters.' };
+        }
         const guildId = message.guild.id;
         const docs = store.read(`documents-${guildId}.json`, []);
         const doc = docs.find(d => d.name.toLowerCase() === args.name.toLowerCase());
@@ -761,7 +778,14 @@ const tools = {
     // ── Memory ──
 
     async saveMemory(args, message) {
+        if (args.value && args.value.length > 4000) {
+            return { error: 'Memory value too large. Maximum 4000 characters.' };
+        }
         const guildId = message.guild.id;
+        const existing = store.read(`memory-${guildId}.json`, {});
+        if (Object.keys(existing).length >= 100 && !existing[args.key]) {
+            return { error: 'Memory limit reached (100 entries). Delete some first.' };
+        }
         store.update(`memory-${guildId}.json`, mem => {
             return { ...(mem || {}), [args.key]: { value: args.value, savedBy: message.author.id, savedAt: new Date().toISOString() } };
         });
@@ -1121,8 +1145,227 @@ const tools = {
         const all = message.guild.roles.cache.filter(r => r.id !== message.guild.id).sort((a, b) => b.position - a.position);
         const roles = all.map(r => ({ name: r.name, color: r.hexColor, members: r.members.size, id: r.id })).slice(0, limit);
         return { roles, total: all.size, showing: roles.length };
+    },
+
+    // ── Forum Channel Tools ──
+
+    async createForumPost(args, message) {
+        const channel = resolveChannel(message.guild, args.channel);
+        if (!channel) return { error: `Channel "${args.channel}" not found.` };
+        if (channel.type !== ChannelType.GuildForum) return { error: `"${channel.name}" is not a forum channel.` };
+        const thread = await channel.threads.create({
+            name: args.title,
+            message: { content: args.content }
+        });
+        return { success: true, thread: thread.name, id: thread.id, channel: channel.name };
+    },
+
+    async listForumPosts(args, message) {
+        const channel = resolveChannel(message.guild, args.channel);
+        if (!channel) return { error: `Channel "${args.channel}" not found.` };
+        if (channel.type !== ChannelType.GuildForum) return { error: `"${channel.name}" is not a forum channel.` };
+        const limit = Math.min(parseInt(args.limit, 10) || 25, 25);
+        const active = await channel.threads.fetchActive();
+        const posts = active.threads.map(t => ({
+            name: t.name, id: t.id, messageCount: t.messageCount, archived: t.archived
+        })).slice(0, limit);
+        return { posts, total: active.threads.size, showing: posts.length };
+    },
+
+    // ── Stage Channel Tools ──
+
+    async createStageInstance(args, message) {
+        const channel = resolveChannel(message.guild, args.channel);
+        if (!channel) return { error: `Channel "${args.channel}" not found.` };
+        if (channel.type !== ChannelType.GuildStageVoice) return { error: `"${channel.name}" is not a stage channel.` };
+        const instance = await message.guild.stageInstances.create(channel, { topic: args.topic });
+        return { success: true, topic: instance.topic, channel: channel.name };
+    },
+
+    async endStageInstance(args, message) {
+        const channel = resolveChannel(message.guild, args.channel);
+        if (!channel) return { error: `Channel "${args.channel}" not found.` };
+        if (!channel.stageInstance) return { error: `No active stage in "${channel.name}".` };
+        await channel.stageInstance.delete();
+        return { success: true, channel: channel.name };
+    },
+
+    // ── Sticker Management ──
+
+    async addSticker(args, message) {
+        const sticker = await message.guild.stickers.create({
+            file: args.url,
+            name: args.name,
+            tags: args.tags,
+            description: args.description || ''
+        });
+        return { success: true, name: sticker.name, id: sticker.id };
+    },
+
+    async removeSticker(args, message) {
+        const sticker = message.guild.stickers.cache.find(s =>
+            s.name.toLowerCase() === args.name.toLowerCase() || s.id === args.name
+        );
+        if (!sticker) return { error: `Sticker "${args.name}" not found.` };
+        await sticker.delete();
+        return { success: true, name: sticker.name };
+    },
+
+    async listStickers(_args, message) {
+        const stickers = message.guild.stickers.cache.map(s => ({
+            name: s.name, id: s.id, tags: s.tags, format: s.format
+        }));
+        return { stickers, total: stickers.length };
+    },
+
+    // ── Temp Ban ──
+
+    async tempBan(args, message) {
+        const member = await resolveMember(message.guild, args.user);
+        if (!member) return { error: `Member "${args.user}" not found.` };
+        if (!member.bannable) return { error: `Cannot ban ${member.displayName}. Insufficient permissions.` };
+        const ms = parseDuration(args.duration);
+        if (!ms) return { error: `Invalid duration "${args.duration}". Use format like 1h, 6h, 1d, 7d.` };
+        const MAX_TEMP_BAN = 30 * 86400000;
+        if (ms > MAX_TEMP_BAN) return { error: 'Temp ban cannot exceed 30 days.' };
+
+        const username = member.user.username;
+        const userId = member.id;
+        await member.ban({ reason: args.reason || `Temp ban (${args.duration}) by Ultron.` });
+
+        setTimeout(async () => {
+            try {
+                await message.guild.members.unban(userId, 'Temp ban expired — Ultron auto-unban.');
+                log.info(`Auto-unbanned ${username} after ${args.duration}`);
+            } catch (err) {
+                log.error(`Auto-unban failed for ${username}:`, err.message);
+            }
+        }, ms);
+
+        return { success: true, banned: username, duration: args.duration, autoUnban: true };
+    },
+
+    // ── Bulk Role Assignment ──
+
+    async bulkAssignRole(args, message) {
+        const role = resolveRole(message.guild, args.role);
+        if (!role) return { error: `Role "${args.role}" not found.` };
+        const usernames = args.users.split(',').map(u => u.trim()).filter(Boolean);
+        if (usernames.length === 0) return { error: 'No users specified.' };
+        if (usernames.length > 25) return { error: 'Maximum 25 users per bulk operation.' };
+
+        const results = { assigned: [], failed: [] };
+        for (const name of usernames) {
+            try {
+                const member = await resolveMember(message.guild, name);
+                if (!member) { results.failed.push(`${name}: not found`); continue; }
+                await member.roles.add(role);
+                results.assigned.push(member.displayName);
+            } catch (err) {
+                results.failed.push(`${name}: ${err.message}`);
+            }
+        }
+        return { success: true, role: role.name, ...results };
+    },
+
+    // ── Voice Configuration ──
+
+    async setVoiceBitrate(args, message) {
+        const channel = resolveChannel(message.guild, args.channel);
+        if (!channel) return { error: `Channel "${args.channel}" not found.` };
+        if (channel.type !== ChannelType.GuildVoice && channel.type !== ChannelType.GuildStageVoice) {
+            return { error: `"${channel.name}" is not a voice channel.` };
+        }
+        const bitrate = parseInt(args.bitrate, 10);
+        if (isNaN(bitrate) || bitrate < 8000 || bitrate > 384000) {
+            return { error: 'Bitrate must be between 8000 and 384000.' };
+        }
+        await channel.setBitrate(bitrate);
+        return { success: true, channel: channel.name, bitrate };
+    },
+
+    async setVoiceRegion(args, message) {
+        const channel = resolveChannel(message.guild, args.channel);
+        if (!channel) return { error: `Channel "${args.channel}" not found.` };
+        if (channel.type !== ChannelType.GuildVoice && channel.type !== ChannelType.GuildStageVoice) {
+            return { error: `"${channel.name}" is not a voice channel.` };
+        }
+        const region = args.region === 'automatic' ? null : (args.region || null);
+        await channel.setRTCRegion(region);
+        return { success: true, channel: channel.name, region: region || 'automatic' };
+    },
+
+    // ── Enhanced Info ──
+
+    async getAuditLogByAction(args, message) {
+        const actionType = AuditLogEvent[args.actionType];
+        if (actionType === undefined) {
+            const available = Object.keys(AuditLogEvent).filter(k => isNaN(k)).slice(0, 20).join(', ');
+            return { error: `Unknown action type "${args.actionType}". Available: ${available}...` };
+        }
+        const limit = Math.min(parseInt(args.limit, 10) || 10, 25);
+        const logs = await message.guild.fetchAuditLogs({ type: actionType, limit });
+        const entries = logs.entries.map(e => ({
+            action: args.actionType,
+            executor: e.executor?.username || 'Unknown',
+            target: e.target?.username || e.target?.name || e.target?.id || 'Unknown',
+            reason: e.reason || null,
+            date: e.createdAt.toISOString()
+        }));
+        return { entries, total: entries.length };
+    },
+
+    async listThreads(args, message) {
+        if (args.channel) {
+            const channel = resolveChannel(message.guild, args.channel);
+            if (!channel) return { error: `Channel "${args.channel}" not found.` };
+            const active = await channel.threads?.fetchActive();
+            if (!active) return { error: `"${channel.name}" does not support threads.` };
+            const threads = active.threads.map(t => ({
+                name: t.name, id: t.id, parent: channel.name, messageCount: t.messageCount, archived: t.archived
+            }));
+            return { threads, total: threads.length };
+        }
+        const active = await message.guild.channels.fetchActiveThreads();
+        const threads = active.threads.map(t => ({
+            name: t.name, id: t.id, parent: t.parent?.name || 'unknown', messageCount: t.messageCount, archived: t.archived
+        }));
+        return { threads, total: threads.length };
+    },
+
+    // ── Tool Audit Trail ──
+
+    async getToolAuditTrail(args, message) {
+        const limit = Math.min(parseInt(args.limit, 10) || 25, 50);
+        const entries = store.getAuditTrail(message.guild.id, limit, args.toolName || null);
+        return { entries, total: entries.length };
     }
 };
+
+// ── Per-User Rate Limiting ──
+
+const RATE_LIMIT_MAX = 30;
+const RATE_LIMIT_WINDOW = 60000;
+const rateLimitMap = new Map();
+
+function checkRateLimit(userId) {
+    const now = Date.now();
+    let bucket = rateLimitMap.get(userId);
+    if (!bucket || now - bucket.windowStart > RATE_LIMIT_WINDOW) {
+        bucket = { windowStart: now, count: 0 };
+        rateLimitMap.set(userId, bucket);
+    }
+    bucket.count++;
+    return bucket.count <= RATE_LIMIT_MAX;
+}
+
+// Cleanup stale entries every 5 minutes
+setInterval(() => {
+    const now = Date.now();
+    for (const [userId, bucket] of rateLimitMap) {
+        if (now - bucket.windowStart > RATE_LIMIT_WINDOW) rateLimitMap.delete(userId);
+    }
+}, 300000);
 
 // ── Executor ──
 
@@ -1131,16 +1374,25 @@ async function executeTool(name, args, message) {
     const fn = tools[name];
     if (!fn) return { error: `Unknown tool: ${name}` };
 
+    // Per-user rate limiting
+    if (!checkRateLimit(message.author.id)) {
+        return { error: `Rate limited. Max ${RATE_LIMIT_MAX} tool calls per ${RATE_LIMIT_WINDOW / 1000}s.` };
+    }
+
     // Check tier-based permissions
     const tierCheck = checkTier(name, message);
     if (!tierCheck.allowed) return { error: tierCheck.error };
 
     try {
-        return await fn(args || {}, message);
+        const result = await fn(args || {}, message);
+        store.logAudit(message.guild.id, message.author.id, name, args || {}, result);
+        return result;
     } catch (err) {
-        console.error(`[Ultron] Tool ${name} error:`, err.message);
-        return { error: `Action failed: ${err.message}` };
+        log.error(`Tool ${name} error:`, err.message);
+        const errorResult = { error: `Action failed: ${err.message}` };
+        store.logAudit(message.guild.id, message.author.id, name, args || {}, errorResult);
+        return errorResult;
     }
 }
 
-module.exports = { executeTool, getUserTier, getTierName, TOOL_TIERS };
+module.exports = { executeTool, getUserTier, getTierName, TOOL_TIERS, _resetRateLimits() { rateLimitMap.clear(); } };
