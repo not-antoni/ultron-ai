@@ -155,9 +155,11 @@ app.listen(config.server.port, () => {
 
 // ── Conversation Cleanup Scheduler ──
 
+const CONVERSATION_MAX_AGE_DAYS = 30;
+
 function cleanupOldConversations() {
     try {
-        const pruned = store.cleanupConversations(30);
+        const pruned = store.cleanupConversations(CONVERSATION_MAX_AGE_DAYS);
         if (pruned > 0) log.info(`Pruned ${pruned} old conversation(s)`);
     } catch (err) {
         log.error('Conversation cleanup error:', err.message);
@@ -167,6 +169,32 @@ function cleanupOldConversations() {
 // Run cleanup daily + 60s after startup
 setInterval(cleanupOldConversations, 24 * 60 * 60 * 1000);
 setTimeout(cleanupOldConversations, 60000);
+
+// ── Temp Ban Unban Scheduler ──
+
+async function processExpiredTempBans() {
+    try {
+        const expired = store.getExpiredTempBans();
+        for (const ban of expired) {
+            try {
+                const guild = client.guilds.cache.get(ban.guild_id);
+                if (guild) {
+                    await guild.members.unban(ban.user_id, 'Temp ban expired — Ultron auto-unban.');
+                    log.info(`Auto-unbanned ${ban.username || ban.user_id} in ${guild.name}`);
+                }
+            } catch (err) {
+                log.error(`Auto-unban failed for ${ban.user_id}:`, err.message);
+            }
+            store.removeTempBan(ban.id);
+        }
+    } catch (err) {
+        log.error('Temp ban scheduler error:', err.message);
+    }
+}
+
+// Check for expired temp bans every 60s + 30s after startup
+setInterval(processExpiredTempBans, 60000);
+setTimeout(processExpiredTempBans, 30000);
 
 // ── Graceful Shutdown ──
 

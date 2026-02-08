@@ -13,6 +13,14 @@ const geminiLog = createLogger('Ultron/Gemini');
 const genAI = new GoogleGenerativeAI(config.gemini.apiKey);
 const groq = config.groq.apiKey ? new Groq({ apiKey: config.groq.apiKey }) : null;
 
+const API_TIMEOUT_MS = 30000;
+function withTimeout(promise, ms = API_TIMEOUT_MS) {
+    return Promise.race([
+        promise,
+        new Promise((_, reject) => setTimeout(() => reject(new Error(`API call timed out after ${ms / 1000}s`)), ms))
+    ]);
+}
+
 // ── Response Cleanup ──
 
 // Patterns for leaked function calls that models dump as text
@@ -28,22 +36,16 @@ const LEAKED_PATTERNS = [
     /<\|im_start\|>tool_calls[\s\S]*?(?:<\|im_end\|>|$)/gi,
 ];
 
-// Patterns for chain-of-thought / reasoning leakage
+// Patterns for chain-of-thought / reasoning leakage (merged for fewer passes)
 const COT_PATTERNS = [
-    /<think>[\s\S]*?<\/think>/gi,                      // <think>reasoning</think>
-    /\(Note:[\s\S]*?\)/gi,                             // (Note: The last response...)
-    /\(Actually[\s\S]*?\)/gi,                          // (Actually we have already...)
-    /\(Final answer[\s\S]*?\)/gi,                      // (Final answer needed?)
-    /\(Wait[\s\S]*?\)/gi,                              // (Wait, let me...)
-    /\(I (?:need|should|think)[\s\S]*?\)/gi,           // (I need to... / I should...)
-    /\(The (?:last|final|correct)[\s\S]*?\)/gi,        // (The last response...)
-    /\(Let me[\s\S]*?\)/gi,                            // (Let me reconsider...)
-    /\*(?:thinking|internal|reasoning)\*[\s\S]*?\*/gi, // *thinking*...*
-    /^(?:Reasoning|Internal thought|Thinking):.*$/gim, // Reasoning: ... lines
-    /User wants to[\s\S]*?\.(?:\s|$)/gi,               // User wants to send normal message...
-    /There(?:'s| is) no tool[\s\S]*?\.(?:\s|$)/gi,     // There's no tool...
-    /(?:We'll|I'll|I will) respond accordingly[^.]*\.?/gi, // We'll respond accordingly.
-    /(?:I (?:don't|do not) have|I lack) (?:a )?(?:direct |)(?:method|tool|way|function)[^.]*\.?/gi, // I lack a direct method...
+    /<think>[\s\S]*?<\/think>/gi,
+    /\((?:Note|Actually|Final answer|Wait|Let me|I (?:need|should|think)|The (?:last|final|correct))[\s\S]*?\)/gi,
+    /\*(?:thinking|internal|reasoning)\*[\s\S]*?\*/gi,
+    /^(?:Reasoning|Internal thought|Thinking):.*$/gim,
+    /User wants to[\s\S]*?\.(?:\s|$)/gi,
+    /There(?:'s| is) no tool[\s\S]*?\.(?:\s|$)/gi,
+    /(?:We'll|I'll|I will) respond accordingly[^.]*\.?/gi,
+    /(?:I (?:don't|do not) have|I lack) (?:a )?(?:direct |)(?:method|tool|way|function)[^.]*\.?/gi,
 ];
 
 function cleanResponse(text) {
@@ -119,6 +121,16 @@ const BASE_TOOL_NAMES = new Set([
     'listChannels', 'listRoles', 'saveMemory', 'getMemory', 'sendMessage'
 ]);
 
+// Pre-index tools by category and name at module load time
+const toolsByCategory = new Map();
+const toolsByName = new Map();
+for (const decl of toolDeclarations) {
+    const cat = decl.category || 'uncategorized';
+    if (!toolsByCategory.has(cat)) toolsByCategory.set(cat, []);
+    toolsByCategory.get(cat).push(decl);
+    toolsByName.set(decl.name, decl);
+}
+
 // Keyword → category mapping for dynamic selection
 const CATEGORY_KEYWORDS = {
     channel: /\b(?:channel|thread|archive|slow\s?mode|lock|unlock|nsfw|voice\s?limit|clone\s?channel|move\s?channel|forum|post|stage|bitrate|region)\b/i,
@@ -139,9 +151,8 @@ function selectToolsForMessage(userInput, userTier) {
     const selectedNames = new Set(BASE_TOOL_NAMES);
 
     // Add info category always (lightweight read-only tools)
-    for (const decl of toolDeclarations) {
-        if (decl.category === 'info') selectedNames.add(decl.name);
-    }
+    const infoTools = toolsByCategory.get('info');
+    if (infoTools) for (const decl of infoTools) selectedNames.add(decl.name);
 
     // Match keywords to categories
     const matchedCategories = new Set();
@@ -151,31 +162,33 @@ function selectToolsForMessage(userInput, userTier) {
         }
     }
 
-    // If no specific categories matched, include all categories (fallback for ambiguous requests)
+    // If no specific categories matched, include common action categories
     if (matchedCategories.size === 0) {
-        // For generic messages, include common action categories
         matchedCategories.add('channel');
         matchedCategories.add('role');
         matchedCategories.add('message');
         matchedCategories.add('moderation');
     }
 
-    // Add tools from matched categories
-    for (const decl of toolDeclarations) {
-        if (matchedCategories.has(decl.category)) {
-            selectedNames.add(decl.name);
+    // Add tools from matched categories using pre-indexed map
+    for (const cat of matchedCategories) {
+        const tools = toolsByCategory.get(cat);
+        if (tools) for (const decl of tools) selectedNames.add(decl.name);
+    }
+
+    // Filter by user tier and build result in a single pass
+    const filtered = [];
+    for (const name of selectedNames) {
+        const requiredTier = TOOL_TIERS[name] || 3;
+        if (userTier < requiredTier) continue;
+        const decl = toolsByName.get(name);
+        if (decl) {
+            const { category, ...rest } = decl;
+            filtered.push(rest);
         }
     }
 
-    // Filter by user tier — remove tools they can't use
-    const filtered = toolDeclarations.filter(decl => {
-        if (!selectedNames.has(decl.name)) return false;
-        const requiredTier = TOOL_TIERS[decl.name] || 3;
-        return userTier >= requiredTier;
-    });
-
-    // Strip internal-only fields (category) — Gemini API rejects unknown fields
-    return filtered.map(({ category, ...rest }) => rest);
+    return filtered;
 }
 
 // ── Dynamic tool_choice Detection ──
@@ -248,7 +261,7 @@ async function groqRequest(messages, tools, toolChoice) {
         }
 
         try {
-            const result = await groq.chat.completions.create(opts);
+            const result = await withTimeout(groq.chat.completions.create(opts));
             if (modelIdx !== activeGroqModelIdx) {
                 activeGroqModelIdx = modelIdx;
                 groqLog.info(`Switched to ${model}`);
@@ -258,13 +271,12 @@ async function groqRequest(messages, tools, toolChoice) {
             if (err.status === 429) {
                 groqLog.warn(`${model} rate limited, trying next model...`);
                 // Set a timer to reset back to preferred model after 60s
-                if (!groqResetTimer) {
-                    groqResetTimer = setTimeout(() => {
-                        activeGroqModelIdx = 0;
-                        groqResetTimer = null;
-                        groqLog.info('Reset to preferred model');
-                    }, 60000);
-                }
+                if (groqResetTimer) clearTimeout(groqResetTimer);
+                groqResetTimer = setTimeout(() => {
+                    activeGroqModelIdx = 0;
+                    groqResetTimer = null;
+                    groqLog.info('Reset to preferred model');
+                }, 60000);
                 continue;
             }
             if (err.status === 400) {
@@ -274,7 +286,7 @@ async function groqRequest(messages, tools, toolChoice) {
             if (err.status === 503) {
                 groqLog.warn(`${model} 503 — retrying in 2s...`);
                 await new Promise(r => setTimeout(r, 2000));
-                try { return await groq.chat.completions.create(opts); } catch (_) {}
+                try { return await withTimeout(groq.chat.completions.create(opts)); } catch (_) {}
                 continue;
             }
             throw err;
@@ -412,10 +424,10 @@ async function generateWithGroqVision(systemPrompt, contents, images) {
 
     const visionModel = 'meta-llama/llama-4-scout-17b-16e-instruct';
     try {
-        const completion = await groq.chat.completions.create({
+        const completion = await withTimeout(groq.chat.completions.create({
             model: visionModel,
             messages
-        });
+        }));
         const text = completion.choices[0]?.message?.content?.trim() || null;
         log.info(`Vision response via Groq (${visionModel})`);
         return { text, toolLog: [] };
@@ -496,10 +508,27 @@ async function generateWithGemini(systemPrompt, contents, message, images = [], 
     if (images.length > 0) {
         const lastMsg = contents[contents.length - 1];
         const imageParts = [];
+        const MAX_IMAGE_BYTES = 10 * 1024 * 1024; // 10MB
         for (const url of images) {
             try {
                 const res = await fetch(url);
-                const buffer = Buffer.from(await res.arrayBuffer());
+                const contentLength = parseInt(res.headers.get('content-length') || '0', 10);
+                if (contentLength > MAX_IMAGE_BYTES) {
+                    geminiLog.warn(`Skipping image (${Math.round(contentLength / 1024 / 1024)}MB exceeds 10MB limit): ${url}`);
+                    continue;
+                }
+                const chunks = [];
+                let totalBytes = 0;
+                for await (const chunk of res.body) {
+                    totalBytes += chunk.length;
+                    if (totalBytes > MAX_IMAGE_BYTES) {
+                        geminiLog.warn(`Skipping image (stream exceeded 10MB limit): ${url}`);
+                        break;
+                    }
+                    chunks.push(chunk);
+                }
+                if (totalBytes > MAX_IMAGE_BYTES) continue;
+                const buffer = Buffer.concat(chunks);
                 const mimeType = res.headers.get('content-type') || 'image/jpeg';
                 imageParts.push({ inlineData: { mimeType, data: buffer.toString('base64') } });
             } catch (err) {
@@ -530,7 +559,7 @@ async function generateWithGemini(systemPrompt, contents, message, images = [], 
             const model = genAI.getGenerativeModel(modelConfig);
 
             const chat = model.startChat({ contents: contents.slice(0, -1) });
-            let result = await chat.sendMessage(contents[contents.length - 1].parts);
+            let result = await withTimeout(chat.sendMessage(contents[contents.length - 1].parts));
 
             const toolLog = [];
             let rounds = 0;
@@ -553,7 +582,7 @@ async function generateWithGemini(systemPrompt, contents, message, images = [], 
                     });
                 }
 
-                result = await chat.sendMessage(functionResponses);
+                result = await withTimeout(chat.sendMessage(functionResponses));
                 rounds++;
             }
 

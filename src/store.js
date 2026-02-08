@@ -49,6 +49,15 @@ db.exec(`
         timestamp TEXT NOT NULL DEFAULT (datetime('now'))
     );
     CREATE INDEX IF NOT EXISTS idx_audit_guild ON audit_trail(guild_id, timestamp);
+    CREATE TABLE IF NOT EXISTS temp_bans (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        guild_id TEXT NOT NULL,
+        user_id TEXT NOT NULL,
+        username TEXT,
+        unban_at TEXT NOT NULL,
+        reason TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_temp_bans_unban ON temp_bans(unban_at);
 `);
 
 // ── Filename → table/key mapping ──
@@ -135,11 +144,15 @@ function write(name, data) {
     ).run(p.guildId, json, now);
 }
 
-function update(name, fn, fallback = null) {
+const updateTx = db.transaction((name, fn, fallback) => {
     const current = read(name, fallback);
     const updated = fn(current);
     write(name, updated);
     return updated;
+});
+
+function update(name, fn, fallback = null) {
+    return updateTx(name, fn, fallback);
 }
 
 // ── Extended API (new for SQLite) ──
@@ -178,8 +191,26 @@ function getAuditTrail(guildId, limit = 25, toolName = null) {
     }));
 }
 
+// ── Temp Ban Helpers ──
+
+function addTempBan(guildId, userId, username, unbanAt, reason) {
+    stmt('add_temp_ban',
+        'INSERT INTO temp_bans (guild_id, user_id, username, unban_at, reason) VALUES (?, ?, ?, ?, ?)'
+    ).run(guildId, userId, username, unbanAt, reason || null);
+}
+
+function getExpiredTempBans() {
+    return stmt('get_expired_bans',
+        'SELECT * FROM temp_bans WHERE unban_at <= ?'
+    ).all(new Date().toISOString());
+}
+
+function removeTempBan(id) {
+    stmt('remove_temp_ban', 'DELETE FROM temp_bans WHERE id = ?').run(id);
+}
+
 function close() {
     db.close();
 }
 
-module.exports = { read, write, update, cleanupConversations, logAudit, getAuditTrail, close };
+module.exports = { read, write, update, cleanupConversations, logAudit, getAuditTrail, addTempBan, getExpiredTempBans, removeTempBan, close };

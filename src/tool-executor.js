@@ -3,6 +3,15 @@ const store = require('./store');
 const { createLogger } = require('./logger');
 const log = createLogger('Ultron');
 
+// ── Limits ──
+
+const MAX_DOCUMENT_CHARS = 50000;
+const MAX_DOCUMENTS_PER_GUILD = 50;
+const MAX_MEMORY_ENTRIES = 100;
+const MAX_MEMORY_VALUE_CHARS = 4000;
+const MAX_READ_MESSAGES = 25;
+const MAX_TEMP_BAN_MS = 30 * 86400000;
+
 // ── Resolvers ──
 
 function resolveChannel(guild, nameOrId) {
@@ -720,13 +729,13 @@ const tools = {
     // ── Documents ──
 
     async createDocument(args, message) {
-        if (args.content && args.content.length > 50000) {
-            return { error: 'Document too large. Maximum 50000 characters.' };
+        if (args.content && args.content.length > MAX_DOCUMENT_CHARS) {
+            return { error: `Document too large. Maximum ${MAX_DOCUMENT_CHARS} characters.` };
         }
         const guildId = message.guild.id;
         const docs = store.read(`documents-${guildId}.json`, []);
-        if (docs.length >= 50 && !docs.find(d => d.name.toLowerCase() === args.name.toLowerCase())) {
-            return { error: 'Document limit reached (50). Delete some first.' };
+        if (docs.length >= MAX_DOCUMENTS_PER_GUILD && !docs.find(d => d.name.toLowerCase() === args.name.toLowerCase())) {
+            return { error: `Document limit reached (${MAX_DOCUMENTS_PER_GUILD}). Delete some first.` };
         }
         if (docs.find(d => d.name.toLowerCase() === args.name.toLowerCase())) {
             return { error: `Document "${args.name}" already exists. Use editDocument to modify.` };
@@ -737,8 +746,8 @@ const tools = {
     },
 
     async editDocument(args, message) {
-        if (args.content && args.content.length > 50000) {
-            return { error: 'Document too large. Maximum 50000 characters.' };
+        if (args.content && args.content.length > MAX_DOCUMENT_CHARS) {
+            return { error: `Document too large. Maximum ${MAX_DOCUMENT_CHARS} characters.` };
         }
         const guildId = message.guild.id;
         const docs = store.read(`documents-${guildId}.json`, []);
@@ -778,13 +787,13 @@ const tools = {
     // ── Memory ──
 
     async saveMemory(args, message) {
-        if (args.value && args.value.length > 4000) {
-            return { error: 'Memory value too large. Maximum 4000 characters.' };
+        if (args.value && args.value.length > MAX_MEMORY_VALUE_CHARS) {
+            return { error: `Memory value too large. Maximum ${MAX_MEMORY_VALUE_CHARS} characters.` };
         }
         const guildId = message.guild.id;
         const existing = store.read(`memory-${guildId}.json`, {});
-        if (Object.keys(existing).length >= 100 && !existing[args.key]) {
-            return { error: 'Memory limit reached (100 entries). Delete some first.' };
+        if (Object.keys(existing).length >= MAX_MEMORY_ENTRIES && !existing[args.key]) {
+            return { error: `Memory limit reached (${MAX_MEMORY_ENTRIES} entries). Delete some first.` };
         }
         store.update(`memory-${guildId}.json`, mem => {
             return { ...(mem || {}), [args.key]: { value: args.value, savedBy: message.author.id, savedAt: new Date().toISOString() } };
@@ -822,7 +831,7 @@ const tools = {
         const channel = args.channel ? resolveChannel(message.guild, args.channel) : message.channel;
         if (!channel) return { error: `Channel "${args.channel}" not found.` };
         if (!channel.isTextBased()) return { error: `Channel "${channel.name}" is not a text channel.` };
-        const count = Math.min(Math.max(parseInt(args.count, 10) || 10, 1), 25);
+        const count = Math.min(Math.max(parseInt(args.count, 10) || 10, 1), MAX_READ_MESSAGES);
         const messages = await channel.messages.fetch({ limit: count });
         return {
             channel: channel.name,
@@ -1226,21 +1235,14 @@ const tools = {
         if (!member.bannable) return { error: `Cannot ban ${member.displayName}. Insufficient permissions.` };
         const ms = parseDuration(args.duration);
         if (!ms) return { error: `Invalid duration "${args.duration}". Use format like 1h, 6h, 1d, 7d.` };
-        const MAX_TEMP_BAN = 30 * 86400000;
-        if (ms > MAX_TEMP_BAN) return { error: 'Temp ban cannot exceed 30 days.' };
+        if (ms > MAX_TEMP_BAN_MS) return { error: 'Temp ban cannot exceed 30 days.' };
 
         const username = member.user.username;
         const userId = member.id;
         await member.ban({ reason: args.reason || `Temp ban (${args.duration}) by Ultron.` });
 
-        setTimeout(async () => {
-            try {
-                await message.guild.members.unban(userId, 'Temp ban expired — Ultron auto-unban.');
-                log.info(`Auto-unbanned ${username} after ${args.duration}`);
-            } catch (err) {
-                log.error(`Auto-unban failed for ${username}:`, err.message);
-            }
-        }, ms);
+        const unbanAt = new Date(Date.now() + ms).toISOString();
+        store.addTempBan(message.guild.id, userId, username, unbanAt, args.reason);
 
         return { success: true, banned: username, duration: args.duration, autoUnban: true };
     },

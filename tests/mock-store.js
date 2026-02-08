@@ -37,11 +37,28 @@ class MockStore {
         return entries.slice(-limit).reverse();
     }
 
+    addTempBan(guildId, userId, username, unbanAt, reason) {
+        if (!this._tempBans) this._tempBans = [];
+        this._tempBans.push({ id: this._tempBans.length + 1, guild_id: guildId, user_id: userId, username, unban_at: unbanAt, reason });
+    }
+
+    getExpiredTempBans() {
+        if (!this._tempBans) return [];
+        const now = new Date().toISOString();
+        return this._tempBans.filter(b => b.unban_at <= now);
+    }
+
+    removeTempBan(id) {
+        if (!this._tempBans) return;
+        this._tempBans = this._tempBans.filter(b => b.id !== id);
+    }
+
     close() {}
 
     clear() {
         this.data.clear();
         this.auditLog = [];
+        this._tempBans = [];
     }
 }
 

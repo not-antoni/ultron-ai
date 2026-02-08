@@ -3,6 +3,32 @@ const store = require('./store');
 const { createLogger } = require('./logger');
 const log = createLogger('Filter');
 
+const MAX_PATTERN_LENGTH = 200;
+const FILTER_TIMEOUT_MS = 5 * 60 * 1000;
+
+// ── Regex Cache ──
+
+const regexCache = new Map();
+
+function getCachedRegex(pattern) {
+    let cached = regexCache.get(pattern);
+    if (cached) return cached;
+    try {
+        cached = new RegExp(pattern, 'i');
+        regexCache.set(pattern, cached);
+        return cached;
+    } catch {
+        return null;
+    }
+}
+
+function invalidateRegexCache(pattern) {
+    if (pattern) regexCache.delete(pattern);
+    else regexCache.clear();
+}
+
+// ── Core Functions ──
+
 function getFilters(guildId) {
     return store.read(`filters-${guildId}.json`, []);
 }
@@ -12,7 +38,7 @@ function saveFilters(guildId, filters) {
 }
 
 function isRegexSafe(pattern) {
-    if (pattern.length > 200) return false;
+    if (pattern.length > MAX_PATTERN_LENGTH) return false;
     // Reject nested quantifiers (common ReDoS patterns)
     if (/(\+|\*)\s*\)?\s*(\+|\*|\{)/.test(pattern)) return false;
     try {
@@ -48,6 +74,7 @@ function addFilter(guildId, { pattern, action, reason, createdBy, bypassRoles })
     };
     filters.push(filter);
     saveFilters(guildId, filters);
+    invalidateRegexCache(null); // Clear cache on filter change
     return { success: true, filter };
 }
 
@@ -57,6 +84,7 @@ function removeFilter(guildId, filterId) {
     if (idx === -1) return { success: false, error: 'Filter not found.' };
     const removed = filters.splice(idx, 1)[0];
     saveFilters(guildId, filters);
+    invalidateRegexCache(removed.pattern);
     return { success: true, removed };
 }
 
@@ -64,12 +92,10 @@ function testMessage(guildId, content) {
     const filters = getFilters(guildId);
     const matches = [];
     for (const filter of filters) {
-        try {
-            const regex = new RegExp(filter.pattern, 'i');
-            if (regex.test(content)) {
-                matches.push(filter);
-            }
-        } catch { /* skip broken regex */ }
+        const regex = getCachedRegex(filter.pattern);
+        if (regex && regex.test(content)) {
+            matches.push(filter);
+        }
     }
     return matches;
 }
@@ -87,7 +113,7 @@ async function processMessage(message) {
     const content = message.content;
     const memberRoles = message.member?.roles.cache.map(r => r.id) || [];
 
-    // Check guild-level bypass roles (set via /setup filterbypass)
+    // Read guild config once (used for bypass roles and modlog)
     const guildCfg = store.read(`guild-${message.guild.id}.json`, {});
     const bypassRoles = guildCfg.filterBypassRoles || [];
     if (bypassRoles.some(id => memberRoles.includes(id))) return false;
@@ -96,10 +122,8 @@ async function processMessage(message) {
         // Check bypass roles
         if (filter.bypassRoles?.some(id => memberRoles.includes(id))) continue;
 
-        try {
-            const regex = new RegExp(filter.pattern, 'i');
-            if (!regex.test(content)) continue;
-        } catch { continue; }
+        const regex = getCachedRegex(filter.pattern);
+        if (!regex || !regex.test(content)) continue;
 
         // Match found — execute action
         log.info(`Match: "${filter.pattern}" in guild ${message.guild.id} by ${message.author.username}`);
@@ -122,16 +146,15 @@ async function processMessage(message) {
 
             case 'timeout': {
                 if (message.member?.moderatable) {
-                    await message.member.timeout(5 * 60 * 1000, filter.reason).catch(() => {});
+                    await message.member.timeout(FILTER_TIMEOUT_MS, filter.reason).catch(() => {});
                 }
                 await message.delete().catch(() => {});
                 break;
             }
 
             case 'log': {
-                const guildConfig = store.read(`guild-${message.guild.id}.json`, {});
-                if (guildConfig.modLogChannel) {
-                    const logChannel = message.guild.channels.cache.get(guildConfig.modLogChannel);
+                if (guildCfg.modLogChannel) {
+                    const logChannel = message.guild.channels.cache.get(guildCfg.modLogChannel);
                     if (logChannel) {
                         await logChannel.send(
                             `**Filter Match** | Pattern: \`${filter.pattern}\` | User: ${message.author.tag} | Channel: <#${message.channel.id}>\nContent: ||${content.slice(0, 200)}||`
@@ -143,15 +166,12 @@ async function processMessage(message) {
         }
 
         // Log to mod channel if configured (for all action types except 'log' which already does it)
-        if (filter.action !== 'log') {
-            const guildConfig = store.read(`guild-${message.guild.id}.json`, {});
-            if (guildConfig.modLogChannel) {
-                const logChannel = message.guild.channels.cache.get(guildConfig.modLogChannel);
-                if (logChannel) {
-                    await logChannel.send(
-                        `**Filter Action: ${filter.action}** | Pattern: \`${filter.pattern}\` | User: ${message.author.tag} | Channel: <#${message.channel.id}>`
-                    ).catch(() => {});
-                }
+        if (filter.action !== 'log' && guildCfg.modLogChannel) {
+            const logChannel = message.guild.channels.cache.get(guildCfg.modLogChannel);
+            if (logChannel) {
+                await logChannel.send(
+                    `**Filter Action: ${filter.action}** | Pattern: \`${filter.pattern}\` | User: ${message.author.tag} | Channel: <#${message.channel.id}>`
+                ).catch(() => {});
             }
         }
 

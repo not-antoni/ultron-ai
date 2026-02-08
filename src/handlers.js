@@ -1,8 +1,30 @@
+const { EmbedBuilder } = require('discord.js');
 const { generateResponse } = require('./ai');
 const { processMessage, getFilters, addFilter, removeFilter, testMessage } = require('./filters');
 const store = require('./store');
 const { createLogger } = require('./logger');
 const log = createLogger('Ultron');
+
+// ── Message Deduplication (prevents double responses on edits) ──
+
+const processedMessages = new Map();
+const DEDUP_TTL_MS = 60000; // 1 minute
+
+function markProcessed(messageId) {
+    processedMessages.set(messageId, Date.now());
+}
+
+function wasAlreadyProcessed(messageId) {
+    return processedMessages.has(messageId);
+}
+
+// Prune expired dedup entries every 2 minutes
+setInterval(() => {
+    const now = Date.now();
+    for (const [id, ts] of processedMessages) {
+        if (now - ts > DEDUP_TTL_MS) processedMessages.delete(id);
+    }
+}, 2 * 60 * 1000);
 
 // ── Cooldown System ──
 
@@ -60,6 +82,9 @@ async function handleReady(client) {
 
 async function handleMessageCreate(message, client) {
     if (message.author.bot) return;
+
+    // Skip already-processed messages (prevents double responses on edits)
+    if (wasAlreadyProcessed(message.id)) return;
 
     // Ignore @everyone and @here pings entirely
     if (message.mentions.everyone) return;
@@ -126,6 +151,7 @@ async function handleMessageCreate(message, client) {
     }
 
     setCooldown(message.author.id);
+    markProcessed(message.id);
     await message.channel.sendTyping().catch(() => {});
 
     try {
@@ -501,7 +527,6 @@ async function handleMemberJoin(member) {
                 .replace(/\{user\}/g, `<@${member.id}>`)
                 .replace(/\{server\}/g, member.guild.name)
                 .replace(/\{memberCount\}/g, member.guild.memberCount);
-            const { EmbedBuilder } = require('discord.js');
             const embed = new EmbedBuilder()
                 .setTitle(`Welcome to ${member.guild.name}`)
                 .setDescription(msg)
@@ -524,7 +549,6 @@ async function handleMemberLeave(member) {
                 .replace(/\{user\}/g, member.user.username)
                 .replace(/\{server\}/g, member.guild.name)
                 .replace(/\{memberCount\}/g, member.guild.memberCount);
-            const { EmbedBuilder } = require('discord.js');
             const embed = new EmbedBuilder()
                 .setTitle('Departure')
                 .setDescription(msg)
