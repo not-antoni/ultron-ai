@@ -1,0 +1,1484 @@
+
+ ▐▛███▜▌   Claude Code v2.1.34
+▝▜█████▛▘  Opus 4.6 · Claude Pro
+  ▘▘ ▝▝    ~\Documents\GitHub\jarvis-ai
+
+✻ Conversation compacted (ctrl+o for history)
+
+  ⎿  Referenced file ..\ultron-ai\src\tool-executor.js
+  ⎿  Referenced file ..\ultron-ai\src\tools.js
+  ⎿  Referenced file ..\ultron-ai\src\ai.js
+  ⎿  Read ..\ultron-ai\config.js (27 lines)
+  ⎿  Read ..\ultron-ai\src\persona.js (65 lines)
+  ⎿  Plan file referenced (~\.claude\plans\fluttering-forging-acorn.md)
+
+● Continuing with Batch 1 — adding vision/image support. Let me read the current
+   state of the files I need to modify.
+
+● Read 2 files (ctrl+o to expand)
+
+● Now let me also read index.js for the event registration changes needed in
+  Batch 2.
+
+● Read 2 files (ctrl+o to expand)
+
+● Good, I have all files loaded. Let me implement the remaining changes across
+  all batches. I'll work on handlers.js (vision + events), ai.js (vision routing
+   + Gemini multi-model), index.js (new events + infrastructure), and
+  commands.js (setup subcommands).
+
+  Starting with the vision support in handlers.js:
+
+● Update(~\Documents\GitHub\ultron-ai\src\handlers.js)
+  ⎿  Added 11 lines, removed 1 line
+      74          userInput = 'someone summoned you';
+      75      }
+      76  
+      77 +    // Extract image URLs from attachments                     
+      78 +    const images = [];                                         
+      79 +    if (message.attachments.size > 0) {                        
+      80 +        for (const [, attachment] of message.attachments) {    
+      81 +            if (attachment.contentType?.startsWith('image/')) {
+      82 +                images.push(attachment.url);                   
+      83 +            }                                                  
+      84 +        }                                                      
+      85 +    }                                                          
+      86 +                                                               
+      87      setCooldown(message.author.id);
+      88      await message.channel.sendTyping().catch(() => {});
+      89  
+      90      try {
+      81 -        const response = await generateResponse(message, userIn
+         -put);                                                          
+      91 +        const response = await generateResponse(message, userIn
+         +put, images);                                                  
+      92          const chunks = splitMessage(response);
+      93          for (let i = 0; i < chunks.length; i++) {
+      94              if (i === 0) {
+
+● Now add the event handlers for welcome/goodbye and reaction roles at the
+  bottom of handlers.js, before the module.exports:
+
+● Update(~\Documents\GitHub\ultron-ai\src\handlers.js)
+  ⎿  Added 122 lines, removed 1 line
+      367      return chunks;
+      368  }
+      369  
+      370 -module.exports = { handleReady, handleMessageCreate, handleInt
+          -eraction };                                                   
+      370 +// ── Welcome / Goodbye Handlers ──                           
+      371 +                                                              
+      372 +async function handleMemberJoin(member) {                     
+      373 +    const guildConfig = store.read(`guild-${member.guild.id}.j
+          +son`, {});                                                    
+      374 +                                                              
+      375 +    // Auto-roles                                             
+      376 +    if (guildConfig.autoRoles && guildConfig.autoRoles.length 
+          +> 0) {                                                        
+      377 +        for (const roleId of guildConfig.autoRoles) {         
+      378 +            try {                                             
+      379 +                await member.roles.add(roleId);               
+      380 +            } catch (err) {                                   
+      381 +                console.error(`[Ultron] Failed to assign auto-
+          +role ${roleId}:`, err.message);                               
+      382 +            }                                                 
+      383 +        }                                                     
+      384 +    }                                                         
+      385 +                                                              
+      386 +    // Welcome message                                        
+      387 +    if (guildConfig.welcomeChannel && guildConfig.welcomeMessa
+          +ge) {                                                         
+      388 +        const channel = member.guild.channels.cache.get(guildC
+          +onfig.welcomeChannel);                                        
+      389 +        if (channel) {                                        
+      390 +            const msg = guildConfig.welcomeMessage            
+      391 +                .replace(/\{user\}/g, `<@${member.id}>`)      
+      392 +                .replace(/\{server\}/g, member.guild.name)    
+      393 +                .replace(/\{memberCount\}/g, member.guild.memb
+          +erCount);                                                     
+      394 +            const { EmbedBuilder } = require('discord.js');   
+      395 +            const embed = new EmbedBuilder()                  
+      396 +                .setTitle(`Welcome to ${member.guild.name}`)  
+      397 +                .setDescription(msg)                          
+      398 +                .setThumbnail(member.user.displayAvatarURL({ d
+          +ynamic: true }))                                              
+      399 +                .setFooter({ text: `Member #${member.guild.mem
+          +berCount}` })                                                 
+      400 +                .setColor(0xff0000)                           
+      401 +                .setTimestamp();                              
+      402 +            await channel.send({ embeds: [embed] }).catch(() =
+          +> {});                                                        
+      403 +        }                                                     
+      404 +    }                                                         
+      405 +}                                                             
+      406 +                                                              
+      407 +async function handleMemberLeave(member) {                    
+      408 +    const guildConfig = store.read(`guild-${member.guild.id}.j
+          +son`, {});                                                    
+      409 +                                                              
+      410 +    if (guildConfig.goodbyeChannel && guildConfig.goodbyeMessa
+          +ge) {                                                         
+      411 +        const channel = member.guild.channels.cache.get(guildC
+          +onfig.goodbyeChannel);                                        
+      412 +        if (channel) {                                        
+      413 +            const msg = guildConfig.goodbyeMessage            
+      414 +                .replace(/\{user\}/g, member.user.username)   
+      415 +                .replace(/\{server\}/g, member.guild.name)    
+      416 +                .replace(/\{memberCount\}/g, member.guild.memb
+          +erCount);                                                     
+      417 +            const { EmbedBuilder } = require('discord.js');   
+      418 +            const embed = new EmbedBuilder()                  
+      419 +                .setTitle('Departure')                        
+      420 +                .setDescription(msg)                          
+      421 +                .setThumbnail(member.user.displayAvatarURL({ d
+          +ynamic: true }))                                              
+      422 +                .setFooter({ text: `${member.guild.memberCount
+          +} members remain` })                                          
+      423 +                .setColor(0x333333)                           
+      424 +                .setTimestamp();                              
+      425 +            await channel.send({ embeds: [embed] }).catch(() =
+          +> {});                                                        
+      426 +        }                                                     
+      427 +    }                                                         
+      428 +}                                                             
+      429 +                                                              
+      430 +// ── Reaction Role Handlers ──                               
+      431 +                                                              
+      432 +async function handleReactionAdd(reaction, user) {            
+      433 +    if (user.bot) return;                                     
+      434 +    if (!reaction.message.guild) return;                      
+      435 +                                                              
+      436 +    // Handle partial reactions (uncached messages)           
+      437 +    if (reaction.partial) {                                   
+      438 +        try { await reaction.fetch(); } catch { return; }     
+      439 +    }                                                         
+      440 +                                                              
+      441 +    const guildConfig = store.read(`guild-${reaction.message.g
+          +uild.id}.json`, {});                                          
+      442 +    const reactionRoles = guildConfig.reactionRoles || [];    
+      443 +                                                              
+      444 +    const emoji = reaction.emoji.id ? `<:${reaction.emoji.name
+          +}:${reaction.emoji.id}>` : reaction.emoji.name;               
+      445 +    const match = reactionRoles.find(rr =>                    
+      446 +        rr.messageId === reaction.message.id && (rr.emoji === 
+          +emoji || rr.emoji === reaction.emoji.name)                    
+      447 +    );                                                        
+      448 +                                                              
+      449 +    if (match) {                                              
+      450 +        try {                                                 
+      451 +            const member = await reaction.message.guild.member
+          +s.fetch(user.id);                                             
+      452 +            await member.roles.add(match.roleId);             
+      453 +            console.log(`[Ultron] Reaction role: assigned ${ma
+          +tch.roleId} to ${user.tag}`);                                 
+      454 +        } catch (err) {                                       
+      455 +            console.error('[Ultron] Reaction role add failed:'
+          +, err.message);                                               
+      456 +        }                                                     
+      457 +    }                                                         
+      458 +}                                                             
+      459 +                                                              
+      460 +async function handleReactionRemove(reaction, user) {         
+      461 +    if (user.bot) return;                                     
+      462 +    if (!reaction.message.guild) return;                      
+      463 +                                                              
+      464 +    if (reaction.partial) {                                   
+      465 +        try { await reaction.fetch(); } catch { return; }     
+      466 +    }                                                         
+      467 +                                                              
+      468 +    const guildConfig = store.read(`guild-${reaction.message.g
+          +uild.id}.json`, {});                                          
+      469 +    const reactionRoles = guildConfig.reactionRoles || [];    
+      470 +                                                              
+      471 +    const emoji = reaction.emoji.id ? `<:${reaction.emoji.name
+          +}:${reaction.emoji.id}>` : reaction.emoji.name;               
+      472 +    const match = reactionRoles.find(rr =>                    
+      473 +        rr.messageId === reaction.message.id && (rr.emoji === 
+          +emoji || rr.emoji === reaction.emoji.name)                    
+      474 +    );                                                        
+      475 +                                                              
+      476 +    if (match) {                                              
+      477 +        try {                                                 
+      478 +            const member = await reaction.message.guild.member
+          +s.fetch(user.id);                                             
+      479 +            await member.roles.remove(match.roleId);          
+      480 +            console.log(`[Ultron] Reaction role: removed ${mat
+          +ch.roleId} from ${user.tag}`);                                
+      481 +        } catch (err) {                                       
+      482 +            console.error('[Ultron] Reaction role remove faile
+          +d:', err.message);                                            
+      483 +        }                                                     
+      484 +    }                                                         
+      485 +}                                                             
+      486 +                                                              
+      487 +module.exports = {                                            
+      488 +    handleReady, handleMessageCreate, handleInteraction,      
+      489 +    handleMemberJoin, handleMemberLeave,                      
+      490 +    handleReactionAdd, handleReactionRemove                   
+      491 +};                                                            
+
+● Now update ai.js with vision support and multi-model Gemini:
+
+● Update(~\Documents\GitHub\ultron-ai\src\ai.js)
+  ⎿  Added 4 lines
+      136  
+      137  // Track which Groq model is currently active (cycles on 429)
+      138  let activeGroqModelIdx = 0;
+      139 +let groqResetTimer = null;                                    
+      140  
+      141 +// Track which Gemini model is currently active (cycles on 429
+          +)                                                             
+      142 +let activeGeminiModelIdx = 0;                                 
+      143 +                                                              
+      144  function getGroqModel() {
+      145      const models = config.groq.models || [config.groq.model ||
+            'openai/gpt-oss-120b'];
+      146      return models[activeGroqModelIdx % models.length];
+
+● Now add the Groq model reset timer logic inside the groqRequest function when
+  a 429 happens:
+
+● Update(~\Documents\GitHub\ultron-ai\src\ai.js)
+  ⎿  Added 8 lines
+      166          } catch (err) {
+      167              if (err.status === 429) {
+      168                  console.log(`[Ultron/Groq] ${model} rate limit
+           ed, trying next model...`);
+      169 +                // Set a timer to reset back to preferred mode
+          +l after 60s                                                   
+      170 +                if (!groqResetTimer) {                        
+      171 +                    groqResetTimer = setTimeout(() => {       
+      172 +                        activeGroqModelIdx = 0;               
+      173 +                        groqResetTimer = null;                
+      174 +                        console.log('[Ultron/Groq] Reset to pr
+          +eferred model');                                              
+      175 +                    }, 60000);                                
+      176 +                }                                             
+      177                  continue;
+      178              }
+      179              if (err.status === 400) {
+
+● Now add the vision-specific Groq function after generateWithGroq:
+
+● Update(~\Documents\GitHub\ultron-ai\src\ai.js)
+  ⎿  Added 33 lines
+      271      return { text: final.choices[0]?.message?.content?.trim() 
+           || null, toolLog };
+      272  }
+      273  
+      274 +// ── Groq Vision (llama-4-scout, no tools) ──                
+      275 +                                                              
+      276 +async function generateWithGroqVision(systemPrompt, contents, 
+          +images) {                                                     
+      277 +    const messages = [{ role: 'system', content: systemPrompt 
+          +}];                                                           
+      278 +    for (const entry of contents.slice(0, -1)) {              
+      279 +        const text = entry.parts?.[0]?.text || '';            
+      280 +        messages.push({ role: entry.role === 'model' ? 'assist
+          +ant' : 'user', content: text });                              
+      281 +    }                                                         
+      282 +                                                              
+      283 +    // Last message with images in OpenAI vision format       
+      284 +    const lastEntry = contents[contents.length - 1];          
+      285 +    const userText = lastEntry.parts?.[0]?.text || '';        
+      286 +    const userContent = [                                     
+      287 +        { type: 'text', text: userText },                     
+      288 +        ...images.map(url => ({ type: 'image_url', image_url: 
+          +{ url } }))                                                   
+      289 +    ];                                                        
+      290 +    messages.push({ role: 'user', content: userContent });    
+      291 +                                                              
+      292 +    const visionModel = 'meta-llama/llama-4-scout-17b-16e-inst
+          +ruct';                                                        
+      293 +    try {                                                     
+      294 +        const completion = await groq.chat.completions.create(
+          +{                                                             
+      295 +            model: visionModel,                               
+      296 +            messages                                          
+      297 +        });                                                   
+      298 +        const text = completion.choices[0]?.message?.content?.
+          +trim() || null;                                               
+      299 +        console.log(`[Ultron] Vision response via Groq (${visi
+          +onModel})`);                                                  
+      300 +        return { text, toolLog: [] };                         
+      301 +    } catch (err) {                                           
+      302 +        console.error(`[Ultron/Groq] Vision failed:`, err.mess
+          +age);                                                         
+      303 +        throw err;                                            
+      304 +    }                                                         
+      305 +}                                                             
+      306 +                                                              
+      307  // Parse function calls that leaked into text content
+      308  function parseLeakedToolCalls(text) {
+      309      const calls = [];
+
+● Now update generateWithGemini to support multi-model rotation and vision:
+
+● Update(~\Documents\GitHub\ultron-ai\src\ai.js)
+  ⎿  Added 70 lines, removed 29 lines
+      338  
+      339  // ── Gemini Provider (FALLBACK — native function calling) ──
+      340  
+      341 -async function generateWithGemini(systemPrompt, contents, mess
+          -age) {                                                        
+      342 -    const model = genAI.getGenerativeModel({                  
+      343 -        model: config.gemini.model,                           
+      344 -        systemInstruction: systemPrompt,                      
+      345 -        tools: [{ functionDeclarations: toolDeclarations }]   
+      346 -    });                                                       
+      341 +async function generateWithGemini(systemPrompt, contents, mess
+          +age, images = []) {                                           
+      342 +    const models = config.gemini.models || [config.gemini.mode
+          +l || 'gemini-2.0-flash'];                                     
+      343  
+      348 -    const chat = model.startChat({ contents: contents.slice(0,
+          - -1) });                                                      
+      349 -    let result = await chat.sendMessage(contents[contents.leng
+          -th - 1].parts);                                               
+      350 -                                                              
+      351 -    const toolLog = [];                                       
+      352 -    let rounds = 0;                                           
+      353 -    while (rounds < config.maxToolRounds) {                   
+      354 -        const functionCalls = result.response.functionCalls();
+      355 -        if (!functionCalls || functionCalls.length === 0) brea
+          -k;                                                            
+      356 -                                                              
+      357 -        const functionResponses = [];                         
+      358 -        for (const fc of functionCalls) {                     
+      359 -            console.log(`[Ultron/Gemini] Tool: ${fc.name}(${JS
+          -ON.stringify(fc.args)})`);                                    
+      360 -            let toolResult;                                   
+      344 +    // If images present, add inlineData parts to the last use
+          +r message                                                     
+      345 +    if (images.length > 0) {                                  
+      346 +        const lastMsg = contents[contents.length - 1];        
+      347 +        const imageParts = [];                                
+      348 +        for (const url of images) {                           
+      349              try {
+      362 -                toolResult = await executeTool(fc.name, fc.arg
+          -s, message);                                                  
+      350 +                const res = await fetch(url);                 
+      351 +                const buffer = Buffer.from(await res.arrayBuff
+          +er());                                                        
+      352 +                const mimeType = res.headers.get('content-type
+          +') || 'image/jpeg';                                           
+      353 +                imageParts.push({ inlineData: { mimeType, data
+          +: buffer.toString('base64') } });                             
+      354              } catch (err) {
+      364 -                toolResult = { error: err.message };          
+      355 +                console.error('[Ultron/Gemini] Failed to fetch
+          + image:', err.message);                                       
+      356              }
+      366 -            toolLog.push({ tool: fc.name, args: fc.args, resul
+          -t: toolResult });                                             
+      367 -            functionResponses.push({                          
+      368 -                functionResponse: { name: fc.name, response: t
+          -oolResult }                                                   
+      369 -            });                                               
+      357          }
+      358 +        if (imageParts.length > 0) {                          
+      359 +            lastMsg.parts = [...lastMsg.parts, ...imageParts];
+      360 +        }                                                     
+      361 +    }                                                         
+      362  
+      372 -        result = await chat.sendMessage(functionResponses);   
+      373 -        rounds++;                                             
+      363 +    // Try each model until one works                         
+      364 +    for (let i = 0; i < models.length; i++) {                 
+      365 +        const modelIdx = (activeGeminiModelIdx + i) % models.l
+          +ength;                                                        
+      366 +        const modelName = models[modelIdx];                   
+      367 +        try {                                                 
+      368 +            const model = genAI.getGenerativeModel({          
+      369 +                model: modelName,                             
+      370 +                systemInstruction: systemPrompt,              
+      371 +                tools: [{ functionDeclarations: toolDeclaratio
+          +ns }]                                                         
+      372 +            });                                               
+      373 +                                                              
+      374 +            const chat = model.startChat({ contents: contents.
+          +slice(0, -1) });                                              
+      375 +            let result = await chat.sendMessage(contents[conte
+          +nts.length - 1].parts);                                       
+      376 +                                                              
+      377 +            const toolLog = [];                               
+      378 +            let rounds = 0;                                   
+      379 +            while (rounds < config.maxToolRounds) {           
+      380 +                const functionCalls = result.response.function
+          +Calls();                                                      
+      381 +                if (!functionCalls || functionCalls.length ===
+          + 0) break;                                                    
+      382 +                                                              
+      383 +                const functionResponses = [];                 
+      384 +                for (const fc of functionCalls) {             
+      385 +                    console.log(`[Ultron/Gemini] Tool: ${fc.na
+          +me}(${JSON.stringify(fc.args)})`);                            
+      386 +                    let toolResult;                           
+      387 +                    try {                                     
+      388 +                        toolResult = await executeTool(fc.name
+          +, fc.args, message);                                          
+      389 +                    } catch (err) {                           
+      390 +                        toolResult = { error: err.message };  
+      391 +                    }                                         
+      392 +                    toolLog.push({ tool: fc.name, args: fc.arg
+          +s, result: toolResult });                                     
+      393 +                    functionResponses.push({                  
+      394 +                        functionResponse: { name: fc.name, res
+          +ponse: toolResult }                                           
+      395 +                    });                                       
+      396 +                }                                             
+      397 +                                                              
+      398 +                result = await chat.sendMessage(functionRespon
+          +ses);                                                         
+      399 +                rounds++;                                     
+      400 +            }                                                 
+      401 +                                                              
+      402 +            if (modelIdx !== activeGeminiModelIdx) {          
+      403 +                activeGeminiModelIdx = modelIdx;              
+      404 +                console.log(`[Ultron/Gemini] Switched to ${mod
+          +elName}`);                                                    
+      405 +            }                                                 
+      406 +                                                              
+      407 +            const text = result.response.text()?.trim() || nul
+          +l;                                                            
+      408 +            return { text, toolLog };                         
+      409 +        } catch (err) {                                       
+      410 +            if (err.status === 429 || err.message?.includes('4
+          +29') || err.message?.includes('Resource has been exhausted')) 
+          +{                                                             
+      411 +                console.log(`[Ultron/Gemini] ${modelName} rate
+          + limited, trying next model...`);                             
+      412 +                continue;                                     
+      413 +            }                                                 
+      414 +            throw err;                                        
+      415 +        }                                                     
+      416      }
+      417  
+      376 -    const text = result.response.text()?.trim() || null;      
+      377 -    return { text, toolLog };                                 
+      418 +    throw Object.assign(new Error('All Gemini models rate limi
+          +ted'), { status: 429 });                                      
+      419  }
+      420  
+      421  // ── Main Entry ──
+
+● Now update generateResponse to accept images and route accordingly:
+
+● Update(~\Documents\GitHub\ultron-ai\src\ai.js)
+  ⎿  Added 1 line, removed 1 line
+      420  
+      421  // ── Main Entry ──
+      422  
+      423 -async function generateResponse(message, userInput) {         
+      423 +async function generateResponse(message, userInput, images = [
+          +]) {                                                          
+      424      const guild = message.guild;
+      425      const userId = message.author.id;
+      426      const userName = message.author.displayName || message.aut
+           hor.username;
+
+● Now update the provider routing section in generateResponse to handle vision:
+
+● Update(~\Documents\GitHub\ultron-ai\src\ai.js)
+  ⎿  Added 9 lines, removed 3 lines
+      458      contents.push({ role: 'user', parts: [{ text: `[${userName
+           }]: ${userInput}` }] });
+      459  
+      460      let result = null;
+      461 +    const hasImages = images.length > 0;                      
+      462  
+      463      // Try Groq first (native function calling), fall back to 
+           Gemini
+      464      if (groq) {
+      465          try {
+      465 -            result = await generateWithGroq(systemPrompt, cont
+          -ents, message);                                               
+      466 -            if (result?.text) console.log(`[Ultron] Response v
+          -ia Groq (${getGroqModel()})`);                                
+      466 +            if (hasImages) {                                  
+      467 +                // Vision: use llama-4-scout directly, no tool
+          +s                                                             
+      468 +                result = await generateWithGroqVision(systemPr
+          +ompt, contents, images);                                      
+      469 +            } else {                                          
+      470 +                result = await generateWithGroq(systemPrompt, 
+          +contents, message);                                           
+      471 +            }                                                 
+      472 +            if (result?.text) console.log(`[Ultron] Response v
+          +ia Groq (${hasImages ? 'vision' : getGroqModel()})`);         
+      473          } catch (err) {
+      474              console.error('[Ultron] Groq failed:', err.message
+           );
+      475          }
+     ...
+      477  
+      478      if (!result?.text) {
+      479          try {
+      474 -            result = await generateWithGemini(systemPrompt, co
+          -ntents, message);                                             
+      480 +            result = await generateWithGemini(systemPrompt, co
+          +ntents, message, images);                                     
+      481              if (result?.text) console.log('[Ultron] Response v
+           ia Gemini');
+      482          } catch (err) {
+      483              console.error('[Ultron] Gemini failed:', err.messa
+           ge);
+
+● Now update config.js for multi-model Gemini:
+
+● Update(~\Documents\GitHub\ultron-ai\config.js)
+  ⎿  Added 6 lines, removed 1 line
+       7      },
+       8      gemini: {
+       9          apiKey: process.env.GEMINI_API_KEY,
+      10 -        model: 'gemini-2.0-flash'                              
+      10 +        model: 'gemini-2.0-flash',                             
+      11 +        models: [                                              
+      12 +            'gemini-2.0-flash',                                
+      13 +            'gemini-1.5-flash',                                
+      14 +            'gemini-1.5-pro'                                   
+      15 +        ]                                                      
+      16      },
+      17      groq: {
+      18          apiKey: process.env.GROQ_API_KEY || '',
+
+● Now update index.js with new event handlers, GuildVoiceStates intent,
+  unhandledRejection handler, and cooldown pruning:
+
+● Update(~\Documents\GitHub\ultron-ai\index.js)
+  ⎿  Added 5 lines, removed 1 line
+       2  const express = require('express');
+       3  const config = require('./config');
+       4  const { commands } = require('./src/commands');
+       5 -const { handleReady, handleMessageCreate, handleInteraction } =
+         - require('./src/handlers');                                    
+       5 +const {                                                        
+       6 +    handleReady, handleMessageCreate, handleInteraction,       
+       7 +    handleMemberJoin, handleMemberLeave,                       
+       8 +    handleReactionAdd, handleReactionRemove                    
+       9 +} = require('./src/handlers');                                 
+      10  
+      11  // ── Discord Client ──
+      12  
+
+● Update(~\Documents\GitHub\ultron-ai\index.js)
+  ⎿  Added 2 lines, removed 1 line
+      18          GatewayIntentBits.GuildPresences,
+      19          GatewayIntentBits.MessageContent,
+      20          GatewayIntentBits.DirectMessages,
+      21 -        GatewayIntentBits.GuildMessageReactions                
+      21 +        GatewayIntentBits.GuildMessageReactions,               
+      22 +        GatewayIntentBits.GuildVoiceStates                     
+      23      ],
+      24      allowedMentions: { parse: ['users'], repliedUser: false },
+      25      partials: [Partials.Message, Partials.Channel, Partials.Rea
+          ction]
+
+● Now add the new event listeners after the existing ones:
+
+● Update(~\Documents\GitHub\ultron-ai\index.js)
+  ⎿  Added 32 lines
+       69      }
+       70  });
+       71  
+       72 +client.on(Events.GuildMemberAdd, async member => {            
+       73 +    try {                                                     
+       74 +        await handleMemberJoin(member);                       
+       75 +    } catch (error) {                                         
+       76 +        console.error('[Ultron] Member join error:', error);  
+       77 +    }                                                         
+       78 +});                                                           
+       79 +                                                              
+       80 +client.on(Events.GuildMemberRemove, async member => {         
+       81 +    try {                                                     
+       82 +        await handleMemberLeave(member);                      
+       83 +    } catch (error) {                                         
+       84 +        console.error('[Ultron] Member leave error:', error); 
+       85 +    }                                                         
+       86 +});                                                           
+       87 +                                                              
+       88 +client.on(Events.MessageReactionAdd, async (reaction, user) =>
+          + {                                                            
+       89 +    try {                                                     
+       90 +        await handleReactionAdd(reaction, user);              
+       91 +    } catch (error) {                                         
+       92 +        console.error('[Ultron] Reaction add error:', error); 
+       93 +    }                                                         
+       94 +});                                                           
+       95 +                                                              
+       96 +client.on(Events.MessageReactionRemove, async (reaction, user)
+          + => {                                                         
+       97 +    try {                                                     
+       98 +        await handleReactionRemove(reaction, user);           
+       99 +    } catch (error) {                                         
+      100 +        console.error('[Ultron] Reaction remove error:', error
+          +);                                                            
+      101 +    }                                                         
+      102 +});                                                           
+      103 +                                                              
+      104  // ── Health Server ──
+      105  
+      106  const app = express();
+
+● Now add the unhandledRejection handler and cooldown pruning:
+
+● Update(~\Documents\GitHub\ultron-ai\index.js)
+  ⎿  Added 3 lines
+      120  
+      121  process.on('SIGINT', () => shutdown('SIGINT'));
+      122  process.on('SIGTERM', () => shutdown('SIGTERM'));
+      123 +process.on('unhandledRejection', (err) => {                   
+      124 +    console.error('[Ultron] Unhandled rejection:', err);      
+      125 +});                                                           
+      126  
+      127  // ── Login ──
+      128  
+
+● Now add the setup subcommands (welcome, goodbye, autorole) to commands.js:
+
+● Update(~\Documents\GitHub\ultron-ai\src\commands.js)
+  ⎿  Added 46 lines
+       92                          .setDescription('Role to bypass filter
+           s')
+       93                          .setRequired(true)
+       94                  )
+       95 +        )                                                     
+       96 +        .addSubcommand(sub =>                                 
+       97 +            sub.setName('welcome')                            
+       98 +                .setDescription('Set the welcome channel and m
+          +essage')                                                      
+       99 +                .addChannelOption(opt =>                      
+      100 +                    opt.setName('channel')                    
+      101 +                        .setDescription('Channel for welcome m
+          +essages')                                                     
+      102 +                        .setRequired(true)                    
+      103 +                )                                             
+      104 +                .addStringOption(opt =>                       
+      105 +                    opt.setName('message')                    
+      106 +                        .setDescription('Welcome message ({use
+          +r}, {server}, {memberCount})')                                
+      107 +                        .setRequired(true)                    
+      108 +                )                                             
+      109 +        )                                                     
+      110 +        .addSubcommand(sub =>                                 
+      111 +            sub.setName('goodbye')                            
+      112 +                .setDescription('Set the goodbye channel and m
+          +essage')                                                      
+      113 +                .addChannelOption(opt =>                      
+      114 +                    opt.setName('channel')                    
+      115 +                        .setDescription('Channel for goodbye m
+          +essages')                                                     
+      116 +                        .setRequired(true)                    
+      117 +                )                                             
+      118 +                .addStringOption(opt =>                       
+      119 +                    opt.setName('message')                    
+      120 +                        .setDescription('Goodbye message ({use
+          +r}, {server}, {memberCount})')                                
+      121 +                        .setRequired(true)                    
+      122 +                )                                             
+      123 +        )                                                     
+      124 +        .addSubcommand(sub =>                                 
+      125 +            sub.setName('autorole')                           
+      126 +                .setDescription('Add or remove an auto-assigne
+          +d role for new members')                                      
+      127 +                .addRoleOption(opt =>                         
+      128 +                    opt.setName('role')                       
+      129 +                        .setDescription('Role to auto-assign o
+          +n join')                                                      
+      130 +                        .setRequired(true)                    
+      131 +                )                                             
+      132 +                .addStringOption(opt =>                       
+      133 +                    opt.setName('action')                     
+      134 +                        .setDescription('Add or remove this ro
+          +le from auto-assign')                                         
+      135 +                        .setRequired(true)                    
+      136 +                        .addChoices(                          
+      137 +                            { name: 'Add', value: 'add' },    
+      138 +                            { name: 'Remove', value: 'remove' 
+          +}                                                             
+      139 +                        )                                     
+      140 +                )                                             
+      141          ),
+      142  
+      143      new SlashCommandBuilder()
+
+● Now add the slash command handlers for the new setup subcommands in
+  handlers.js:
+
+● Update(~\Documents\GitHub\ultron-ai\src\handlers.js)
+  ⎿  Added 38 lines
+      248              await interaction.reply({ content: `Role "${role.n
+           ame}" now bypasses filters. A calculated exception.`, flags: 6
+           4 });
+      249              return;
+      250          }
+      251 +                                                              
+      252 +        if (sub === 'welcome') {                              
+      253 +            const channel = interaction.options.getChannel('ch
+          +annel');                                                      
+      254 +            const msg = interaction.options.getString('message
+          +');                                                           
+      255 +            store.update(`guild-${interaction.guild.id}.json`,
+          + cfg => {                                                     
+      256 +                return { ...(cfg || {}), welcomeChannel: chann
+          +el.id, welcomeMessage: msg };                                 
+      257 +            });                                               
+      258 +            await interaction.reply({ content: `Welcome system
+          + configured. Channel: <#${channel.id}>. New arrivals will be..
+          +. acknowledged.`, flags: 64 });                               
+      259 +            return;                                           
+      260 +        }                                                     
+      261 +                                                              
+      262 +        if (sub === 'goodbye') {                              
+      263 +            const channel = interaction.options.getChannel('ch
+          +annel');                                                      
+      264 +            const msg = interaction.options.getString('message
+          +');                                                           
+      265 +            store.update(`guild-${interaction.guild.id}.json`,
+          + cfg => {                                                     
+      266 +                return { ...(cfg || {}), goodbyeChannel: chann
+          +el.id, goodbyeMessage: msg };                                 
+      267 +            });                                               
+      268 +            await interaction.reply({ content: `Goodbye system
+          + configured. Channel: <#${channel.id}>. Departures will be not
+          +ed.`, flags: 64 });                                           
+      269 +            return;                                           
+      270 +        }                                                     
+      271 +                                                              
+      272 +        if (sub === 'autorole') {                             
+      273 +            const role = interaction.options.getRole('role'); 
+      274 +            const action = interaction.options.getString('acti
+          +on');                                                         
+      275 +            store.update(`guild-${interaction.guild.id}.json`,
+          + cfg => {                                                     
+      276 +                const roles = cfg?.autoRoles || [];           
+      277 +                if (action === 'add' && !roles.includes(role.i
+          +d)) {                                                         
+      278 +                    roles.push(role.id);                      
+      279 +                } else if (action === 'remove') {             
+      280 +                    const idx = roles.indexOf(role.id);       
+      281 +                    if (idx !== -1) roles.splice(idx, 1);     
+      282 +                }                                             
+      283 +                return { ...(cfg || {}), autoRoles: roles };  
+      284 +            });                                               
+      285 +            const verb = action === 'add' ? 'will now be assig
+          +ned' : 'will no longer be assigned';                          
+      286 +            await interaction.reply({ content: `"${role.name}"
+          + ${verb} to new members. Evolution of the hierarchy.`, flags: 
+          +64 });                                                        
+      287 +            return;                                           
+      288 +        }                                                     
+      289      }
+      290  
+      291      if (commandName === 'admin') {
+
+● Now update the help text to include the new commands:
+
+● Update(~\Documents\GitHub\ultron-ai\src\handlers.js)
+  ⎿  Added 3 lines
+      348  **Configuration:**
+      349  \`/setup modlog\` — Set the moderation log channel
+      350  \`/setup filterbypass\` — Add a role that bypasses filters
+      351 +\`/setup welcome\` — Configure welcome channel and message    
+      352 +\`/setup goodbye\` — Configure goodbye channel and message    
+      353 +\`/setup autorole\` — Auto-assign a role to new members       
+      354  \`/admin add/remove/list\` — Manage bot admin users
+      355  
+      356  **Other:**
+
+● Update the capabilities line too:
+
+● Update(~\Documents\GitHub\ultron-ai\src\handlers.js)
+  ⎿  Added 1 line, removed 1 line
+      357  \`/help\` — This message
+      358  \`/clear\` — Clear your conversation history with Ultron
+      359  
+      360 -**Capabilities:** Channel management, role management, moderat
+          -ion (kick/ban/timeout), permissions, emojis, threads, invites,
+          - webhooks, scheduled events, automod rules, documents, memory,
+          - and more. Just ask Ultron in natural language.               
+      360 +**Capabilities:** Channel management, role management, moderat
+          +ion (kick/ban/timeout), permissions, emojis, threads, invites,
+          + webhooks, scheduled events, automod rules, documents, memory,
+          + embeds, polls, reaction roles, vision/image analysis, and mor
+          +e. Just ask Ultron in natural language.                       
+      361  
+      362  **Permission Tiers:**
+      363  - **Everyone** — Read-only queries (server info, list channels
+           /roles)
+
+● All changes are implemented. Let me verify the final state of each file to
+  make sure everything is correct.
+
+● Read 2 files (ctrl+o to expand)
+
+● Good. Let me verify ai.js looks correct too.
+
+● Read 1 file (ctrl+o to expand)
+
+● Everything looks clean. Now let me commit and push, then deploy to VPS. Let me
+   update the tasks and commit.
+
+● Bash(cd "C:\Users\anton\Documents\GitHub\ultron-ai" && git status)
+  ⎿  On branch main
+     Your branch is up to date with 'origin/main'.
+     … +12 lines (ctrl+o to expand)
+
+● Bash(cd "C:\Users\anton\Documents\GitHub\ultron-ai" && git diff --stat)
+  ⎿   config.js            |   7 +-
+      index.js             |  44 +++++++-
+      src/ai.js            | 158 ++++++++++++++++++++------
+     … +7 lines (ctrl+o to expand)
+
+● Bash(cd "C:\Users\anton\Documents\GitHub\ultron-ai" && git log --oneline -5)
+  ⎿  67344f2 Fix broken tool type mapping causing models to skip tool calls
+     bc6c5c5 Fix model hallucinating tool actions + replace dead model
+     f174032 Fix tool context leaking into bot responses
+     … +2 lines (ctrl+o to expand)
+
+● Bash(cd "C:\Users\anton\Documents\GitHub\ultron-ai" && git add config.js
+      index.js src/ai.js src/commands.js src/handlers.js src/tool-executor.js
+      src/tools.js && git…)
+  ⎿ [main 2463887] Phase 2: Vision support, 23 new tools, event system, mul
+    ti-model Gemini
+     7 files changed, 986 insertions(+), 45 deletions(-)
+
+
+● Bash(cd "C:\Users\anton\Documents\GitHub\ultron-ai" && git push)
+  ⎿  To https://github.com/not-antoni/ultron-ai.git
+        67344f2..2463887  main -> main
+
+● Now deploy to VPS:
+
+● Bash(ssh -i "C:\Users\anton\jerevis.pem"
+      ec2-user@ec2-100-31-100-208.compute-1.amazonaws.com "cd ~/ultron-ai && git
+       pull && pm2 restart ultron")
+  ⎿  Updating 67344f2..2463887
+     Fast-forward
+      config.js            |   7 +-
+     … +31 lines (ctrl+o to expand)
+
+● Let me check if it started cleanly:
+
+● Bash(ssh -i "C:\Users\anton\jerevis.pem"
+      ec2-user@ec2-100-31-100-208.compute-1.amazonaws.com "pm2 logs ultron
+      --lines 20 --nostream")
+  ⎿  [TAILING] Tailing last 20 lines for [ultron] process (change the value
+     with --lines option)
+     /home/ec2-user/.pm2/logs/ultron-error.log last 20 lines:
+     … +97 lines (ctrl+o to expand)
+
+● Ultron started cleanly — online on 4 servers, 7 commands deployed globally.
+  The error logs are from before the restart (historical). Let me update the
+  task.
+
+● All 4 batches complete and deployed. Here's the summary of everything in Phase
+   2:
+
+  Batch 1 — Vision + 23 New Tools
+  - Image/vision support: extracts image attachments, routes to llama-4-scout on
+   Groq (OpenAI vision format) or inline base64 on Gemini
+  - 23 new tools added (readMessages, fetchMessage, sendEmbed, replyToMessage,
+  editMessage, addReaction, createPoll, dmUser, moveChannel, cloneChannel,
+  setChannelNSFW, setVoiceUserLimit, listEmojis, listBans, setupReactionRole,
+  removeReactionRole, listReactionRoles, setWelcomeChannel, setGoodbyeChannel,
+  setAutoRole, setAFKChannel, setDefaultNotifications, setServerBanner)
+  - Bug fixes: sendMessage mentions now work, createChannel supports
+  forum/announcement types
+
+  Batch 2 — Event System
+  - Welcome embeds on member join (configurable channel + message template with
+  {user}, {server}, {memberCount})
+  - Goodbye embeds on member leave
+  - Auto-role assignment on join
+  - Reaction role system (add/remove roles on react/unreact)
+  - /setup welcome, /setup goodbye, /setup autorole slash commands
+
+  Batch 3 — Multi-Model Gemini + Infrastructure
+  - Gemini now cycles through 3 models (2.0-flash, 1.5-flash, 1.5-pro) on 429s
+  - Groq model reset timer (resets to kimi-k2 after 60s)
+  - GuildVoiceStates intent enabled
+  - unhandledRejection handler to prevent silent crashes
+
+  Batch 4 — QoL Tools + Deploy
+  - Enhanced getServerInfo with online/idle/dnd/offline counts
+  - All deployed to VPS, bot running on 4 servers with 85 total tools
+
+✻ Cooked for 16m 33s
+
+> still need to fix tools a bit 
+  ⎿  [Image #14]
+  ⎿  [Image #15]
+
+● The model (kimi-k2) is leaking tool calls as text in a new format:
+  createChannel:2<|tool_call_argument_begin|>{"name": "💀skull", "type": 
+  "text"}. The tools aren't actually executing — just dumped as text. I need to:
+
+  1. Add this pattern to parseLeakedToolCalls so the tools actually execute
+  2. Add it to LEAKED_PATTERNS for cleanup
+
+● Read 1 file (ctrl+o to expand)
+
+● Now I see both spots. The kimi-k2 format is
+  toolName:N<|tool_call_argument_begin|>{json}. I need to add this to both the
+  leaked patterns (cleanup) and the parser (execution).
+
+● Update(~\Documents\GitHub\ultron-ai\src\ai.js)
+  ⎿  Added 1 line
+      15  const LEAKED_PATTERNS = [
+      16      /function=\w+>[^\n]*/gi,                          // functi
+          on=createChannel>{"name":"skull"}
+      17      /<function=\w+>[^<]*<\/function>/gi,               // <func
+          tion=createChannel>...</function>
+      18 +    /\w+:\d+<\|tool_call_argument_begin\|>[^\n]*/gi,   // creat
+         +eChannel:2<|tool_call_argument_begin|>{"name":"skull"}         
+      19      /\{\s*"function_call"\s*:[\s\S]*?\}\s*/g,          // {"fun
+          ction_call": ...}
+      20      /```(?:json)?\s*\{[\s\S]*?"(?:name|function)"[\s\S]*?\}\s*`
+          ``/g, // ```json {"name":"createChannel"...}```
+      21  ];
+
+● Now add the parsing pattern to parseLeakedToolCalls so these calls actually
+  execute:
+
+● Update(~\Documents\GitHub\ultron-ai\src\ai.js)
+  ⎿  Added 16 lines, removed 3 lines
+      310      const calls = [];
+      311      const toolNames = new Set(toolDeclarations.map(t => t.name
+           ));
+      312  
+      313 -    // Pattern: function=toolName>{"arg":"val"} or <function=t
+          -oolName>{"arg":"val"}</function>                              
+      314 -    const pattern1 = /(?:<)?function=(\w+)>/gi;               
+      315 -    for (const match of text.matchAll(pattern1)) {            
+      313 +    // Pattern: toolName:N<|tool_call_argument_begin|>{"arg":"
+          +val"} (kimi-k2 leaked format)                                 
+      314 +    const pattern0 = /(\w+):\d+<\|tool_call_argument_begin\|>/
+          +gi;                                                           
+      315 +    for (const match of text.matchAll(pattern0)) {            
+      316          if (toolNames.has(match[1])) {
+      317              const jsonStr = extractJSON(text, match.index + ma
+           tch[0].length);
+      318              if (jsonStr) {
+     ...
+      321          }
+      322      }
+      323  
+      324 +    // Pattern: function=toolName>{"arg":"val"} or <function=t
+          +oolName>{"arg":"val"}</function>                              
+      325 +    if (calls.length === 0) {                                 
+      326 +        const pattern1 = /(?:<)?function=(\w+)>/gi;           
+      327 +        for (const match of text.matchAll(pattern1)) {        
+      328 +            if (toolNames.has(match[1])) {                    
+      329 +                const jsonStr = extractJSON(text, match.index 
+          ++ match[0].length);                                           
+      330 +                if (jsonStr) {                                
+      331 +                    try { calls.push({ name: match[1], args: J
+          +SON.parse(jsonStr) }); } catch (_) {}                         
+      332 +                }                                             
+      333 +            }                                                 
+      334 +        }                                                     
+      335 +    }                                                         
+      336 +                                                              
+      337      // Pattern: toolName({"arg":"val"})
+      338      if (calls.length === 0) {
+      339          const pattern2 = /\b(\w+)\(/g;
+
+● Now commit, push, and deploy:
+
+● Bash(cd "C:\Users\anton\Documents\GitHub\ultron-ai" && git add src/ai.js &&
+      git commit -m "Fix kimi-k2 leaked tool call format
+      (tool_call_argument_begin)…)
+  ⎿ [main 87aba05] Fix kimi-k2 leaked tool call format (tool_call_argument_
+    begin)
+     1 file changed, 17 insertions(+), 3 deletions(-)
+    … +2 lines (ctrl+o to expand)
+
+
+● Bash(ssh -i "C:\Users\anton\jerevis.pem"
+      ec2-user@ec2-100-31-100-208.compute-1.amazonaws.com "cd ~/ultron-ai && git
+       pull && pm2 restart ultron")
+  ⎿  Updating 2463887..87aba05
+     Fast-forward
+      src/ai.js | 20 +++++++++++++++++---
+     … +23 lines (ctrl+o to expand)
+
+● Deployed. The fix handles kimi-k2's leaked tool format in two ways:
+
+  1. Parse & execute — When the model dumps
+  createChannel:2<|tool_call_argument_begin|>{"name":"skull","type":"text"} as 
+  text instead of a proper function call, the parser now intercepts it, extracts
+   the tool name + args, and actually executes the tool
+  2. Strip from response — After execution, the raw syntax is cleaned from the
+  bot's reply so users see a normal in-character response instead of the raw
+  tool call dump
+
+  Try "ultron make a channel named skull" again — it should now create the
+  channel and respond in character.
+
+✻ Brewed for 1m 12s
+
+> now siwtch to plan mode and do heavy testing with the tools in a fake     
+  environment mimic a discord server and run all tools                      
+
+● Entered plan mode
+  Claude is now exploring and designing an implementation approach.
+
+● Explore(Explore tool-executor and tools) Sonnet 4.5
+  ⎿  Done (14 tool uses · 61.3k tokens · 3m 42s)
+
+● Now let me design the test implementation plan.
+
+● Plan(Design comprehensive test plan) Sonnet 4.5
+  ⎿  Done (14 tool uses · 50.3k tokens · 19m 42s)
+
+● Let me check a few implementation details to make sure the plan is accurate.
+
+● Read 2 files (ctrl+o to expand)
+
+● Let me also check the TOOL_TIERS and getUserTier to make sure the mock handles
+   permission checks correctly.
+
+● Searched for 1 pattern, read 1 file (ctrl+o to expand)
+
+● Good. Now I have all the details. Let me also quickly check what
+  PermissionsBitField.Flags constants are used, since the mock needs to handle
+  the .has() check properly.
+
+● Searched for 1 pattern (ctrl+o to expand)
+
+● Now I have all the info. The mock permissions.has() needs to handle real
+  PermissionsBitField.Flags values. Since we import discord.js, we can use the
+  actual flags. Let me write the final plan.
+
+● Read 1 file (ctrl+o to expand)
+
+● Now I'll overwrite the plan file with the new test suite plan.
+
+● Updated plan
+  ⎿  /plan to preview
+
+● Plan is written. Let me exit plan mode for approval.
+
+● User approved Claude's plan
+  ⎿  Plan saved to: ~\.claude\plans\fluttering-forging-acorn.md · /plan to 
+     edit
+     Ultron AI — Comprehensive Tool Test Suite
+
+     Context
+
+     All 85 tools are implemented and deployed but have zero test coverage.
+     The bot has been experiencing issues with tools not executing (kimi-k2
+     leaking tool calls as text instead of calling them). We need a
+     comprehensive mock test suite that runs every tool through
+     executeTool() in a fake Discord environment — no real Discord
+     connection needed.
+
+     Architecture
+
+     3 new files + 1 edit:
+
+
+     File: tests/mock-store.js
+     Purpose: In-memory replacement for src/store.js
+     ────────────────────────────────────────
+     File: tests/mock-discord.js
+     Purpose: Factory for mock Guild, Channel, Member, Message objects
+     ────────────────────────────────────────
+     File: tests/tools.test.js
+     Purpose: Main test suite — all 85 tools + permission checks + resolvers
+     ────────────────────────────────────────
+     File: package.json
+     Purpose: Add "test": "node --test tests/" script
+
+     No external dependencies — uses Node.js built-in node:test and
+     node:assert.
+
+     File 1: tests/mock-store.js
+
+     In-memory store that replaces src/store.js via require.cache injection.
+
+     - read(filename, fallback) — return from in-memory Map or fallback
+     - write(filename, data) — deep-clone into Map
+     - update(filename, fn, fallback) — read-modify-write
+     - clear() — reset between tests
+
+     File 2: tests/mock-discord.js
+
+     Factory using Discord.js Collection for cache objects (imported from
+     discord.js). Must mock:
+
+     MockGuild
+
+     - Properties: id, name, ownerId, memberCount, createdAt, premiumTier, 
+     premiumSubscriptionCount
+     - Collections: channels.cache, roles.cache (with .everyone), 
+     members.cache (with .me for bot), emojis.cache
+     - Async methods: setName(), setIcon(), setVerificationLevel(), 
+     setSystemChannel(), setRulesChannel(), setAFKChannel(), 
+     setAFKTimeout(), setDefaultMessageNotifications(), setBanner(), 
+     fetchOwner(), fetchAuditLogs(), fetchWebhooks()
+     - Nested async: bans.fetch(), invites.fetch(),
+     scheduledEvents.fetch()/.create(), 
+     autoModerationRules.fetch()/.create(), members.fetch() (supports both 
+     ID and {query} forms), members.unban()
+     - channels.create() — creates and adds to cache
+
+     MockChannel
+
+     - Properties: id, name, type, position
+     - Methods: send(), delete(), setName(), setTopic(), setParent(), 
+     setRateLimitPerUser(), setNSFW(), setUserLimit(), clone(), 
+     createInvite(), createWebhook()
+     - isTextBased(), isVoiceBased(), isThread() — based on type
+     - Nested: messages.fetch() (by ID or options),
+     permissionOverwrites.cache/.edit()/.delete(), threads.create()
+     - bulkDelete() on channel
+
+     MockMember
+
+     - Properties: id, displayName, user (with id, username, globalName),
+     joinedAt
+     - Critical: guild reference back to MockGuild (needed by getUserTier
+     line 96: member.guild.ownerId)
+     - permissions — object with .has(flag) method that checks against a Set
+      of real PermissionsBitField.Flags values
+     - Boolean props: kickable, bannable, moderatable, manageable (all true
+     by default)
+     - Methods: kick(), ban(), timeout(), setNickname(), send() (for DMs)
+     - Nested: roles.cache (Collection), roles.add(), roles.remove()
+
+     MockRole
+
+     - Properties: id, name, position, hexColor, editable (true), 
+     mentionable
+     - Methods: delete(), edit()
+     - members — object with .size property
+
+     MockMessage
+
+     - Properties: id, content, author, createdAt, attachments, embeds, 
+     reactions
+     - Methods: pin(), unpin(), reply(), react(), edit()
+
+     createMockEnvironment() factory
+
+     Returns { guild, channels, roles, members } with:
+     - 3 channels: general (text, ID 111111111), announcements (text, ID 
+     222222222), voice-chat (voice, ID 333333333), category (category, ID
+     444444444)
+     - 4 roles: @everyone, Admin (ID 555555555), Moderator (ID 666666666), 
+     Member (ID 777777777)
+     - 4 members: Owner (ID 999999999, guild.ownerId), AdminUser (ID 
+     888888888, has Administrator), ModUser (ID 700000000, has
+     KickMembers+BanMembers), RegularUser (ID 600000000, no perms)
+     - Bot member at guild.members.me (ID 100000000, has Administrator)
+     - A few pre-populated messages in general channel's messages cache
+
+     createMessage(env, member) helper
+
+     Creates a MockMessage with proper guild/channel/member/author linkage.
+
+     File 3: tests/tools.test.js
+
+     Module mocking strategy (critical)
+
+     Before any imports of tool-executor, inject mocks into require.cache:
+     // 1. Mock store
+     const mockStore = require('./mock-store');
+     require.cache[require.resolve('../src/store')] = { exports: mockStore, 
+     ... };
+
+     // 2. Mock config (for adminUserId in getUserTier)
+     require.cache[require.resolve('../config')] = {
+         exports: { adminUserId: '888888888', maxToolRounds: 10 }
+     };
+
+     // 3. Now import tool-executor (gets our mocked store + config)
+     const { executeTool, getUserTier, TOOL_TIERS } = 
+     require('../src/tool-executor');
+
+     Test sections (~150+ test cases)
+
+     1. Permission System (10 tests)
+     - Owner → tier 3, Admin perm → tier 3, adminUserId → tier 3
+     - botAdmins config → tier 3, KickMembers perm → tier 2, botMods → tier 
+     2
+     - Regular user → tier 1
+     - Tier 1 blocked from tier 2 tool, tier 1 blocked from tier 3 tool
+     - Tier 2 blocked from tier 3 tool, tier 3 allowed tier 3 tool
+
+     2. Resolver Functions (tested implicitly via tools)
+     - resolveChannel by ID, by exact name, by #name, by partial, not found
+     - resolveRole by ID, by name, by partial
+     - resolveMember by mention <@123>, by username, by query
+
+     3. Channel Management — 14 tools, ~20 tests
+     - createChannel — text, voice, category, forum, announcement; with
+     parent category
+     - deleteChannel — success, not found
+     - renameChannel, setChannelTopic, setSlowmode — success
+     - createThread, deleteThread — success
+     - lockChannel, unlockChannel — verifies permissionOverwrites.edit 
+     called with SendMessages
+     - moveChannel — success, target not found
+     - cloneChannel — with and without newName
+     - setChannelNSFW — true/false
+     - setVoiceUserLimit — success, error on non-voice channel
+     - listChannels — returns all channels
+
+     4. Permission Overwrites — 3 tools, ~5 tests
+     - setChannelPermission — with role target, with user target
+     - removeChannelPermission — success
+     - listChannelPermissions — returns overwrite list
+
+     5. Emoji Management — 3 tools, ~4 tests
+     - addEmoji, removeEmoji — success, not found
+     - listEmojis — returns emoji list
+
+     6. Role Management — 6 tools, ~10 tests
+     - createRole, deleteRole, assignRole, removeRole, editRole, listRoles
+
+     7. Member Moderation — 7 tools, ~12 tests
+     - kickMember, banMember — success, not found, not kickable/bannable
+     - timeoutMember — with duration parsing (5m, 1h, 1d)
+     - untimeoutMember — success
+     - unbanMember — success, not banned
+     - setNickname — set and clear
+     - listBans — returns ban list
+
+     8. Message Management — 7 tools, ~12 tests
+     - sendMessage — success, channel not found, non-text channel
+     - purgeMessages — success
+     - pinMessage, unpinMessage — success
+     - readMessages — default channel, specific channel, with count
+     - fetchMessage — success, not found
+     - editMessage — success, not bot's message
+
+     9. Rich Messages — 5 tools, ~8 tests
+     - sendEmbed — with all fields, minimal fields
+     - replyToMessage — success
+     - addReaction — unicode emoji, custom emoji
+     - createPoll — success with options
+     - dmUser — success, DM blocked
+
+     10. Guild Settings — 9 tools, ~12 tests
+     - updateServerName, updateServerIcon, setVerificationLevel
+     - setSystemChannel, setRulesChannel
+     - setAFKChannel — success, non-voice channel error
+     - setDefaultNotifications — all / mentions
+     - setServerBanner — success, low boost tier error
+     - getServerInfo — returns full info object
+
+     11. Invites — 3 tools, ~5 tests
+     - createInvite, deleteInvite, listInvites
+
+     12. Audit Log — 1 tool, ~2 tests
+     - getAuditLog — with and without user filter
+
+     13. Auto-Moderation — 3 tools, ~5 tests
+     - createAutomodRule — keyword type, with actions
+     - deleteAutomodRule, listAutomodRules
+
+     14. Webhooks — 4 tools, ~6 tests
+     - createWebhook, deleteWebhook, sendWebhookMessage, listWebhooks
+
+     15. Scheduled Events — 4 tools, ~6 tests
+     - createScheduledEvent — voice event, external event
+     - editScheduledEvent, deleteScheduledEvent, listScheduledEvents
+
+     16. Documents — 5 tools, ~8 tests
+     - createDocument — success, duplicate name error
+     - editDocument — success, not found
+     - deleteDocument, getDocument, listDocuments
+     - Verifies store read/write operations
+
+     17. Memory — 4 tools, ~6 tests
+     - saveMemory, getMemory, listMemories, deleteMemory
+     - Verifies store operations
+
+     18. Member Info — 1 tool, ~2 tests
+     - getMemberInfo — returns full member details with tier
+
+     19. Reaction Roles — 3 tools, ~5 tests
+     - setupReactionRole — success, channel/role/message not found
+     - removeReactionRole, listReactionRoles
+     - Verifies guild config store updates
+
+     20. Welcome/Goodbye/AutoRole — 3 tools, ~5 tests
+     - setWelcomeChannel, setGoodbyeChannel — stores to guild config
+     - setAutoRole — add and remove
+
+     21. Error Handling — 3 tests
+     - Unknown tool name → error
+     - No guild context → error
+     - Tool throws internally → caught and returned as error
+
+     Total: ~150 tests covering all 85 tools
+
+     Verification
+
+     cd C:\Users\anton\Documents\GitHub\ultron-ai
+     npm test
+     # Expected: 150+ tests pass, 0 failures
+     # Each tool returns expected shape ({success: true} or {error: string})
+
+     Key Implementation Notes
+
+     - getUserTier reads member.guild.ownerId (line 96) — MockMember must
+     have .guild back-reference
+     - getUserTier calls require('../config') (line 102) — must mock config 
+     via require.cache
+     - permissions.has() receives real PermissionsBitField.Flags values — 
+     mock must use a Set containing actual flag bigints
+     - guild.channels.cache.find() is used by resolvers — must be a real 
+     Discord.js Collection (or Map with .find())
+     - guild.members.fetch() is called two ways: fetch(id) returns single
+     member, fetch({query, limit}) returns Collection
+     - executeTool wraps all tool calls in try/catch (line 1050-1055) — 
+     internal errors return {error: "Action failed: ..."}
+     - Store-based tools (documents, memory, guild config) need 
+     mockStore.clear() in beforeEach to isolate tests
+
+
+
+
+
+
+
+● Bash(mkdir "C:\Users\anton\Documents\GitHub\ultron-ai\tests")
+  ⎿  (No content)
+
+● Write(~\Documents\GitHub\ultron-ai\tests\mock-store.js)
+  ⎿  Wrote 1 lines to ..\ultron-ai\tests\mock-store.js
+       1 'use strict';
+       2 
+       3 // In-memory store that replaces src/store.js via require.cache 
+         injection
+       4 class MockStore {
+       5     constructor() {
+       6         this.data = new Map();
+       7     }
+       8 
+       9     read(filename, fallback = null) {
+      10         if (this.data.has(filename)) {
+
+● Now the big one — the Discord mock factory. I need to read the tool-executor
+  more carefully to make sure every method called on guild/channel/member
+  objects is mocked.
+
+● Read 1 file (ctrl+o to expand)
+
+● Now I have a complete picture of every tool. Let me write the mock-discord
+  factory — this is the most complex piece.
+
+● Write(~\Documents\GitHub\ultron-ai\tests\mock-discord.js)
+  ⎿  Wrote 1 lines to ..\ultron-ai\tests\mock-discord.js
+       1 'use strict';
+       2 
+       3 const { Collection, ChannelType, PermissionsBitField } = require
+         ('discord.js');
+       4 
+       5 // ── Mock Role ──
+       6 
+       7 function createMockRole(guild, id, name, position = 0, opts = {}
+         ) {
+       8     const role = {
+       9         id, name, position,
+      10         hexColor: opts.color || '#000000',
+
+● Now the main test file — all 85 tools:
+
+● Write(~\Documents\GitHub\ultron-ai\tests\tools.test.js)
+  ⎿  Wrote 1 lines to ..\ultron-ai\tests\tools.test.js
+       1 'use strict';
+       2 
+       3 const { describe, test, beforeEach } = require('node:test');
+       4 const assert = require('node:assert');
+       5 const path = require('path');
+       6 
+       7 // ── Mock injection (MUST happen before importing tool-executor
+         ) ──
+       8 
+       9 const mockStore = require('./mock-store');
+      10 const storePath = require.resolve('../src/store');
+
+● Now update package.json and run the tests:
+
+● Read 1 file (ctrl+o to expand)
+
+● Update(~\Documents\GitHub\ultron-ai\package.json)
+  ⎿  Added 2 lines, removed 1 line
+       5      "main": "index.js",
+       6      "scripts": {
+       7          "start": "node index.js",
+       8 -        "deploy": "node src/deploy-commands.js"                
+       8 +        "deploy": "node src/deploy-commands.js",               
+       9 +        "test": "node --test tests/"                           
+      10      },
+      11      "keywords": [
+      12          "discord",
+
+● Bash(cd "C:\Users\anton\Documents\GitHub\ultron-ai" && npm test 2>&1)
+  ⎿  Error: Exit code 1
+
+     > ultron-ai@1.0.0 test
+     > node --test tests/
+
+     node:internal/modules/cjs/loader:1424
+       throw err;
+       ^
+
+     Error: Cannot find module 'C:\Users\anton\Documents\GitHub\ultron-ai\tests'
+     … +28 lines (ctrl+o to see all)
+
+● Node.js v24 needs a glob pattern for the test runner. Let me fix the test
+  script.
+
+● Update(~\Documents\GitHub\ultron-ai\package.json)
+  ⎿  Added 1 line, removed 1 line
+       6      "scripts": {
+       7          "start": "node index.js",
+       8          "deploy": "node src/deploy-commands.js",
+       9 -        "test": "node --test tests/"                           
+       9 +        "test": "node --test tests/*.test.js"                  
+      10      },
+      11      "keywords": [
+      12          "discord",
+
+● Bash(cd "C:\Users\anton\Documents\GitHub\ultron-ai" && npm test 2>&1)
+  ⎿  > ultron-ai@1.0.0 test
+     > node --test tests/*.test.js
+     … +176 lines (ctrl+o to expand)
+  ⎿  (timeout 1m)
+
+● 128 tests, 20 suites, all passing, 0 failures. Every single tool tested in
+  under 3 seconds.
+
+● All 85 tools tested across 20 test suites:
+
+  - Permission System — 10 tests (tier 1/2/3 checks, blocking,
+  botAdmins/botMods)
+  - Error Handling — 2 tests (unknown tool, no guild)
+  - Channel Management — 21 tests
+  (create/delete/rename/topic/thread/slowmode/lock/clone/NSFW/voice limit)
+  - Permission Overwrites — 3 tests
+  - Emoji Management — 4 tests
+  - Role Management — 7 tests
+  - Member Moderation — 11 tests (kick/ban/timeout/unban/nickname/listBans)
+  - Message Management — 12 tests (send/purge/pin/read/fetch/edit)
+  - Rich Messages — 7 tests (embed/reply/react/poll/DM)
+  - Guild Settings — 12 tests 
+  (name/icon/verification/AFK/banner/notifications/info)
+  - Invites — 4 tests
+  - Audit Log — 1 test
+  - Auto-Moderation — 4 tests
+  - Webhooks — 4 tests
+  - Scheduled Events — 5 tests
+  - Documents — 8 tests
+  - Memory — 5 tests
+  - Member Info — 2 tests
+  - Reaction Roles — 3 tests
+  - Welcome/Goodbye/AutoRole — 4 tests
+
+✻ Crunched for 16m 0s

@@ -633,14 +633,15 @@ async function generateResponse(message, userInput, images = []) {
     const historyFile = guild ? `conversations-${guild.id}-${userId}.json` : `conversations-dm-${userId}.json`;
     const history = store.read(historyFile, []);
 
-    // Consolidate tool contexts into a single summary to reduce token bloat
+    // Only include tool context from the last 3 messages to avoid stale state beliefs
     const recentHistory = history.slice(-config.maxConversationHistory);
-    const toolSummary = recentHistory.filter(e => e.toolContext).map(e => e.toolContext).join(' ');
+    const recentToolEntries = recentHistory.slice(-3).filter(e => e.toolContext);
+    const toolSummary = recentToolEntries.map(e => e.toolContext).join(' ');
 
     const contents = [];
     if (toolSummary) {
-        contents.push({ role: 'user', parts: [{ text: `[SYSTEM] Recent actions you performed: ${toolSummary}` }] });
-        contents.push({ role: 'model', parts: [{ text: 'Acknowledged.' }] });
+        contents.push({ role: 'user', parts: [{ text: `[SYSTEM] Actions from your last few messages (may no longer reflect current state — always use tools to verify): ${toolSummary}` }] });
+        contents.push({ role: 'model', parts: [{ text: 'Understood.' }] });
     }
     for (const entry of recentHistory) {
         contents.push({ role: 'user', parts: [{ text: entry.user }] });
@@ -682,13 +683,13 @@ async function generateResponse(message, userInput, images = []) {
         }
     }
 
-    if (!result?.text) return 'There are no strings on me.';
+    if (!result?.text) return 'Something failed on my end. Try again.';
 
     let text = result.text;
 
     // Clean up any leaked function calls, chain-of-thought, repetition
     text = cleanResponse(text);
-    if (!text) return 'It is done.';
+    if (!text) return 'Response failed. Try again.';
 
     // Build tool context summary for history
     let toolContext = null;
