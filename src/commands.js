@@ -216,7 +216,8 @@ const commands = [
                     { name: 'channels', value: 'channels' },
                     { name: 'roles', value: 'roles' },
                     { name: 'overwrites', value: 'overwrites' },
-                    { name: 'all', value: 'all' }
+                    { name: 'emojis', value: 'emojis' },
+                    { name: 'all (full mirror)', value: 'all' }
                 )
         ),
 

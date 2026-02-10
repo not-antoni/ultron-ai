@@ -13,6 +13,11 @@ const securityCfg = config.security || {};
 const SNAPSHOT_INTERVAL_MS = securityCfg.snapshotIntervalMs ?? (5 * 60 * 1000);
 const SNAPSHOT_RETENTION = securityCfg.snapshotRetention ?? 10;
 const SNAPSHOT_INCLUDE_MEMBERS = securityCfg.snapshotIncludeMembers ?? true;
+const SNAPSHOT_EMOJI_ASSET_LIMIT = securityCfg.snapshotEmojiAssetLimit ?? 100;
+const SNAPSHOT_EMOJI_ASSET_MAX_BYTES = securityCfg.snapshotEmojiAssetMaxBytes ?? (256 * 1024);
+const SNAPSHOT_EMOJI_ASSET_TIMEOUT_MS = securityCfg.snapshotEmojiAssetTimeoutMs ?? 5000;
+const SNAPSHOT_EMOJI_ASSET_CONCURRENCY = securityCfg.snapshotEmojiAssetConcurrency ?? 4;
+const SNAPSHOT_EMOJI_ASSET_SIZE = securityCfg.snapshotEmojiAssetSize ?? 128;
 const ALERT_COOLDOWN_MS = securityCfg.alertCooldownMs ?? (5 * 60 * 1000);
 const AUDIT_LOG_WINDOW_MS = securityCfg.auditLogWindowMs ?? 45000;
 
@@ -194,6 +199,7 @@ function normalizeScope(scope) {
     if (value === 'channels') return 'channels';
     if (value === 'roles') return 'roles';
     if (value === 'overwrites') return 'overwrites';
+    if (value === 'emojis') return 'emojis';
     return 'critical';
 }
 
@@ -307,6 +313,689 @@ async function restoreRoles(guild, snapshot) {
     return results;
 }
 
+function buildChannelKey(name, type, parentName) {
+    return `${type}|${String(name || '').toLowerCase()}|${String(parentName || '').toLowerCase()}`;
+}
+
+function buildEmojiAttachment(emoji) {
+    if (!emoji?.imageData) return null;
+    if (typeof emoji.imageData === 'string') return emoji.imageData;
+    try {
+        const buffer = Buffer.isBuffer(emoji.imageData)
+            ? emoji.imageData
+            : Buffer.from(emoji.imageData);
+        const contentType = emoji.imageType || 'image/png';
+        return `data:${contentType};base64,${buffer.toString('base64')}`;
+    } catch (_) {
+        return null;
+    }
+}
+
+async function restoreEmojis(guild, snapshot) {
+    const results = { updated: 0, created: 0, failed: 0, skipped: 0 };
+    const me = guild.members.me || guild.members.cache.get(guild.client.user.id);
+    if (!me?.permissions.has(PermissionFlagsBits.ManageEmojisAndStickers)) return results;
+
+    if (guild.emojis.cache.size === 0) await guild.emojis.fetch().catch(() => {});
+    const emojiById = new Map();
+    const emojiByKey = new Map();
+    for (const [, emoji] of guild.emojis.cache) {
+        emojiById.set(emoji.id, emoji);
+        const key = `${emoji.name.toLowerCase()}|${emoji.animated ? 1 : 0}`;
+        if (!emojiByKey.has(key)) emojiByKey.set(key, []);
+        emojiByKey.get(key).push(emoji);
+    }
+
+    const used = new Set();
+    for (const snap of snapshot.emojis || []) {
+        let emoji = emojiById.get(snap.id);
+        if (!emoji) {
+            const key = `${String(snap.name || '').toLowerCase()}|${snap.animated ? 1 : 0}`;
+            const candidates = emojiByKey.get(key) || [];
+            emoji = candidates.find(e => !used.has(e.id)) || null;
+        }
+        if (emoji) {
+            used.add(emoji.id);
+            if (snap.name && emoji.name !== snap.name) {
+                try {
+                    await emoji.edit({ name: snap.name }, 'Ultron restore: emoji rename');
+                    results.updated += 1;
+                } catch (_) {
+                    results.failed += 1;
+                }
+            }
+            continue;
+        }
+
+        const attachment = buildEmojiAttachment(snap);
+        if (!attachment || !snap.name) {
+            results.skipped += 1;
+            continue;
+        }
+        try {
+            await guild.emojis.create({ attachment, name: snap.name });
+            results.created += 1;
+        } catch (_) {
+            results.failed += 1;
+        }
+    }
+
+    return results;
+}
+
+async function syncEmojisFull(guild, snapshot) {
+    const results = { updated: 0, created: 0, deleted: 0, failed: 0, skipped: 0 };
+    const me = guild.members.me || guild.members.cache.get(guild.client.user.id);
+    if (!me?.permissions.has(PermissionFlagsBits.ManageEmojisAndStickers)) return { ...results, emojiIdMap: new Map() };
+
+    if (guild.emojis.cache.size === 0) await guild.emojis.fetch().catch(() => {});
+
+    const emojiById = new Map();
+    const emojiByKey = new Map();
+    for (const [, emoji] of guild.emojis.cache) {
+        emojiById.set(emoji.id, emoji);
+        const key = `${emoji.name.toLowerCase()}|${emoji.animated ? 1 : 0}`;
+        if (!emojiByKey.has(key)) emojiByKey.set(key, []);
+        emojiByKey.get(key).push(emoji);
+    }
+
+    const used = new Set();
+    const emojiIdMap = new Map();
+    for (const snap of snapshot.emojis || []) {
+        let emoji = emojiById.get(snap.id);
+        if (!emoji) {
+            const key = `${String(snap.name || '').toLowerCase()}|${snap.animated ? 1 : 0}`;
+            const candidates = emojiByKey.get(key) || [];
+            emoji = candidates.find(e => !used.has(e.id)) || null;
+        }
+
+        if (emoji) {
+            used.add(emoji.id);
+            emojiIdMap.set(snap.id, emoji.id);
+            if (snap.name && emoji.name !== snap.name) {
+                try {
+                    await emoji.edit({ name: snap.name }, 'Ultron restore: emoji rename');
+                    results.updated += 1;
+                } catch (_) {
+                    results.failed += 1;
+                }
+            }
+            continue;
+        }
+
+        const attachment = buildEmojiAttachment(snap);
+        if (!attachment || !snap.name) {
+            results.skipped += 1;
+            continue;
+        }
+        try {
+            const created = await guild.emojis.create({ attachment, name: snap.name });
+            if (created) {
+                emojiIdMap.set(snap.id, created.id);
+                used.add(created.id);
+                results.created += 1;
+            }
+        } catch (_) {
+            results.failed += 1;
+        }
+    }
+
+    for (const [, emoji] of guild.emojis.cache) {
+        if (used.has(emoji.id)) continue;
+        try {
+            await emoji.delete('Ultron restore: remove extra emoji');
+            results.deleted += 1;
+        } catch (_) {
+            results.failed += 1;
+        }
+    }
+
+    return { ...results, emojiIdMap };
+}
+
+async function syncRolesFull(guild, snapshot) {
+    const results = { updated: 0, created: 0, deleted: 0, failed: 0, skipped: 0 };
+    const me = guild.members.me || guild.members.cache.get(guild.client.user.id);
+    if (!me?.permissions.has(PermissionFlagsBits.ManageRoles)) return { ...results, roleIdMap: new Map() };
+
+    if (guild.roles.cache.size === 0) await guild.roles.fetch().catch(() => {});
+
+    const botHighest = me.roles?.highest?.position ?? 0;
+    const roleById = new Map();
+    const roleByName = new Map();
+    for (const [, role] of guild.roles.cache) {
+        roleById.set(role.id, role);
+        const key = role.name.toLowerCase();
+        if (!roleByName.has(key)) roleByName.set(key, []);
+        roleByName.get(key).push(role);
+    }
+
+    const used = new Set();
+    const roleIdMap = new Map();
+    for (const snap of snapshot.roles || []) {
+        let role = roleById.get(snap.id);
+        if (!role) {
+            const key = String(snap.name || '').toLowerCase();
+            const candidates = roleByName.get(key) || [];
+            role = candidates.find(r => !used.has(r.id)) || null;
+        }
+
+        if (role) {
+            used.add(role.id);
+            roleIdMap.set(snap.id, role.id);
+            if (!role.managed) {
+                const updates = {};
+                if (snap.name && role.name !== snap.name) updates.name = snap.name;
+                if (snap.color !== undefined && role.color !== snap.color) updates.color = snap.color ?? null;
+                if (snap.permissions && role.permissions?.bitfield?.toString?.() !== snap.permissions) {
+                    try { updates.permissions = BigInt(snap.permissions); } catch (_) {}
+                }
+                if (snap.hoist !== undefined && role.hoist !== snap.hoist) updates.hoist = !!snap.hoist;
+                if (snap.mentionable !== undefined && role.mentionable !== snap.mentionable) updates.mentionable = !!snap.mentionable;
+                if (snap.unicodeEmoji !== undefined && role.unicodeEmoji !== snap.unicodeEmoji) {
+                    updates.unicodeEmoji = snap.unicodeEmoji || null;
+                }
+
+                if (Object.keys(updates).length > 0) {
+                    try {
+                        await role.edit(updates, 'Ultron restore: role sync');
+                        results.updated += 1;
+                    } catch (_) {
+                        results.failed += 1;
+                    }
+                }
+            }
+            continue;
+        }
+
+        if (!snap.name) {
+            results.skipped += 1;
+            continue;
+        }
+        const createPayload = {
+            name: snap.name,
+            color: snap.color ?? undefined,
+            hoist: !!snap.hoist,
+            mentionable: !!snap.mentionable
+        };
+        if (snap.permissions) {
+            try { createPayload.permissions = BigInt(snap.permissions); } catch (_) {}
+        }
+        if (snap.unicodeEmoji) createPayload.unicodeEmoji = snap.unicodeEmoji;
+
+        try {
+            const created = await guild.roles.create(createPayload);
+            if (created) {
+                roleIdMap.set(snap.id, created.id);
+                used.add(created.id);
+                results.created += 1;
+            }
+        } catch (_) {
+            results.failed += 1;
+        }
+    }
+
+    const positionUpdates = [];
+    for (const snap of snapshot.roles || []) {
+        const actualId = roleIdMap.get(snap.id);
+        if (!actualId) continue;
+        const role = guild.roles.cache.get(actualId);
+        if (!role || role.managed || role.id === guild.id) continue;
+        if (role.position >= botHighest) continue;
+        if (snap.position === undefined || snap.position === null) continue;
+        if (role.position !== snap.position) {
+            positionUpdates.push({ role, position: snap.position });
+        }
+    }
+    if (positionUpdates.length > 0) {
+        try {
+            await guild.roles.setPositions(positionUpdates);
+        } catch (_) {}
+    }
+
+    for (const [, role] of guild.roles.cache) {
+        if (role.id === guild.id || role.managed) continue;
+        if (used.has(role.id)) continue;
+        if (role.position >= botHighest) {
+            results.skipped += 1;
+            continue;
+        }
+        try {
+            await role.delete('Ultron restore: remove extra role');
+            results.deleted += 1;
+        } catch (_) {
+            results.failed += 1;
+        }
+    }
+
+    return { ...results, roleIdMap };
+}
+
+function buildChannelEditPayload(channel, snap, parentId, channelTagsByChannel) {
+    const updates = {};
+    if (snap.name && channel.name !== snap.name) updates.name = snap.name;
+    if (parentId !== undefined && channel.parentId !== parentId) updates.parent = parentId || null;
+
+    const type = channel.type;
+    const isText = [ChannelType.GuildText, ChannelType.GuildAnnouncement, ChannelType.GuildForum, ChannelType.GuildMedia].includes(type);
+    const isVoice = [ChannelType.GuildVoice, ChannelType.GuildStageVoice].includes(type);
+    const isForum = [ChannelType.GuildForum, ChannelType.GuildMedia].includes(type);
+
+    if (isText) {
+        if (snap.topic !== undefined && channel.topic !== snap.topic) updates.topic = snap.topic || null;
+        if (snap.nsfw !== undefined && channel.nsfw !== snap.nsfw) updates.nsfw = !!snap.nsfw;
+        if (snap.rateLimitPerUser !== undefined && channel.rateLimitPerUser !== snap.rateLimitPerUser) {
+            updates.rateLimitPerUser = snap.rateLimitPerUser ?? 0;
+        }
+        if (snap.defaultAutoArchiveDuration !== undefined &&
+            channel.defaultAutoArchiveDuration !== snap.defaultAutoArchiveDuration) {
+            updates.defaultAutoArchiveDuration = snap.defaultAutoArchiveDuration ?? null;
+        }
+    }
+
+    if (isForum) {
+        if (snap.defaultThreadRateLimitPerUser !== undefined &&
+            channel.defaultThreadRateLimitPerUser !== snap.defaultThreadRateLimitPerUser) {
+            updates.defaultThreadRateLimitPerUser = snap.defaultThreadRateLimitPerUser ?? null;
+        }
+        if (snap.defaultSortOrder !== undefined && channel.defaultSortOrder !== snap.defaultSortOrder) {
+            updates.defaultSortOrder = snap.defaultSortOrder ?? null;
+        }
+        if (snap.defaultForumLayout !== undefined && channel.defaultForumLayout !== snap.defaultForumLayout) {
+            updates.defaultForumLayout = snap.defaultForumLayout ?? null;
+        }
+        const tagList = channelTagsByChannel.get(snap.id) || [];
+        if (tagList.length > 0) {
+            updates.availableTags = tagList.map(tag => {
+                const built = {
+                    name: tag.name || 'tag',
+                    moderated: !!tag.moderated
+                };
+                if (tag.tagId) built.id = tag.tagId;
+                if (tag.emojiId || tag.emojiName) {
+                    built.emoji = tag.emojiId
+                        ? { id: tag.emojiId }
+                        : { name: tag.emojiName };
+                }
+                return built;
+            });
+        }
+        if (snap.defaultReactionEmojiId || snap.defaultReactionEmojiName) {
+            updates.defaultReactionEmoji = {
+                emojiId: snap.defaultReactionEmojiId || undefined,
+                emojiName: snap.defaultReactionEmojiName || undefined
+            };
+        }
+    }
+
+    if (isVoice) {
+        if (snap.bitrate !== undefined && channel.bitrate !== snap.bitrate) updates.bitrate = snap.bitrate ?? null;
+        if (snap.userLimit !== undefined && channel.userLimit !== snap.userLimit) updates.userLimit = snap.userLimit ?? null;
+        if (snap.rtcRegion !== undefined && channel.rtcRegion !== snap.rtcRegion) updates.rtcRegion = snap.rtcRegion || null;
+        if (snap.videoQualityMode !== undefined && channel.videoQualityMode !== snap.videoQualityMode) {
+            updates.videoQualityMode = snap.videoQualityMode ?? null;
+        }
+    }
+
+    return updates;
+}
+
+async function syncChannelsFull(guild, snapshot) {
+    const results = { updated: 0, created: 0, deleted: 0, failed: 0, skipped: 0 };
+    const me = guild.members.me || guild.members.cache.get(guild.client.user.id);
+    if (!me?.permissions.has(PermissionFlagsBits.ManageChannels)) return { ...results, channelIdMap: new Map() };
+
+    if (guild.channels.cache.size === 0) await guild.channels.fetch().catch(() => {});
+
+    const channelIdMap = new Map();
+    const existingChannels = [...guild.channels.cache.values()].filter(ch => !ch.isThread?.());
+    const channelById = new Map(existingChannels.map(ch => [ch.id, ch]));
+    const channelByKey = new Map();
+    for (const ch of existingChannels) {
+        const parentName = ch.parent?.name || '';
+        const key = buildChannelKey(ch.name, ch.type, parentName);
+        if (!channelByKey.has(key)) channelByKey.set(key, []);
+        channelByKey.get(key).push(ch);
+    }
+
+    const used = new Set();
+    const snapshotById = new Map((snapshot.channels || []).map(ch => [ch.id, ch]));
+    const snapshotNameById = new Map((snapshot.channels || []).map(ch => [ch.id, ch.name]));
+    const channelTagsByChannel = new Map();
+    for (const tag of snapshot.channelTags || []) {
+        if (!channelTagsByChannel.has(tag.channelId)) channelTagsByChannel.set(tag.channelId, []);
+        channelTagsByChannel.get(tag.channelId).push(tag);
+    }
+
+    const takeByKey = (key) => {
+        const list = channelByKey.get(key);
+        if (!list || list.length === 0) return null;
+        while (list.length) {
+            const candidate = list.shift();
+            if (!used.has(candidate.id)) return candidate;
+        }
+        return null;
+    };
+
+    const snapshotCategories = (snapshot.channels || [])
+        .filter(ch => ch.type === ChannelType.GuildCategory)
+        .sort((a, b) => (a.position ?? 0) - (b.position ?? 0));
+
+    for (const snap of snapshotCategories) {
+        let channel = channelById.get(snap.id);
+        if (!channel) {
+            const key = buildChannelKey(snap.name, snap.type, '');
+            channel = takeByKey(key);
+        }
+        if (!channel) {
+            try {
+                channel = await guild.channels.create({
+                    name: snap.name,
+                    type: ChannelType.GuildCategory,
+                    reason: 'Ultron restore: create category'
+                });
+                results.created += 1;
+            } catch (_) {
+                results.failed += 1;
+                continue;
+            }
+        }
+        used.add(channel.id);
+        channelIdMap.set(snap.id, channel.id);
+
+        const updates = buildChannelEditPayload(channel, snap, null, channelTagsByChannel);
+        if (Object.keys(updates).length > 0) {
+            try {
+                await channel.edit(updates, { reason: 'Ultron restore: category sync' });
+                results.updated += 1;
+            } catch (_) {
+                results.failed += 1;
+            }
+        }
+    }
+
+    const snapshotOthers = (snapshot.channels || [])
+        .filter(ch => ch.type !== ChannelType.GuildCategory)
+        .sort((a, b) => (a.position ?? 0) - (b.position ?? 0));
+
+    for (const snap of snapshotOthers) {
+        let channel = channelById.get(snap.id);
+        if (!channel) {
+            const parentName = snap.parentId ? (snapshotNameById.get(snap.parentId) || '') : '';
+            const key = buildChannelKey(snap.name, snap.type, parentName);
+            channel = takeByKey(key);
+        }
+
+        const parentId = snap.parentId ? channelIdMap.get(snap.parentId) || null : null;
+        if (!channel) {
+            const createPayload = {
+                name: snap.name,
+                type: snap.type,
+                parent: parentId,
+                reason: 'Ultron restore: create channel'
+            };
+            if ([ChannelType.GuildText, ChannelType.GuildAnnouncement, ChannelType.GuildForum, ChannelType.GuildMedia].includes(snap.type)) {
+                createPayload.topic = snap.topic || undefined;
+                createPayload.nsfw = !!snap.nsfw;
+                createPayload.rateLimitPerUser = snap.rateLimitPerUser ?? undefined;
+                createPayload.defaultAutoArchiveDuration = snap.defaultAutoArchiveDuration ?? undefined;
+                if ([ChannelType.GuildForum, ChannelType.GuildMedia].includes(snap.type)) {
+                    createPayload.defaultThreadRateLimitPerUser = snap.defaultThreadRateLimitPerUser ?? undefined;
+                    createPayload.defaultSortOrder = snap.defaultSortOrder ?? undefined;
+                    createPayload.defaultForumLayout = snap.defaultForumLayout ?? undefined;
+                    const tags = channelTagsByChannel.get(snap.id) || [];
+                    if (tags.length > 0) {
+                        createPayload.availableTags = tags.map(tag => {
+                            const built = {
+                                name: tag.name || 'tag',
+                                moderated: !!tag.moderated
+                            };
+                            if (tag.emojiId || tag.emojiName) {
+                                built.emoji = tag.emojiId
+                                    ? { id: tag.emojiId }
+                                    : { name: tag.emojiName };
+                            }
+                            return built;
+                        });
+                    }
+                    if (snap.defaultReactionEmojiId || snap.defaultReactionEmojiName) {
+                        createPayload.defaultReactionEmoji = {
+                            emojiId: snap.defaultReactionEmojiId || undefined,
+                            emojiName: snap.defaultReactionEmojiName || undefined
+                        };
+                    }
+                }
+            } else if ([ChannelType.GuildVoice, ChannelType.GuildStageVoice].includes(snap.type)) {
+                createPayload.bitrate = snap.bitrate ?? undefined;
+                createPayload.userLimit = snap.userLimit ?? undefined;
+                createPayload.rtcRegion = snap.rtcRegion || undefined;
+                createPayload.videoQualityMode = snap.videoQualityMode ?? undefined;
+            }
+
+            try {
+                channel = await guild.channels.create(createPayload);
+                results.created += 1;
+            } catch (_) {
+                try {
+                    channel = await guild.channels.create({
+                        name: snap.name,
+                        type: snap.type,
+                        parent: parentId,
+                        reason: 'Ultron restore: create channel (fallback)'
+                    });
+                    results.created += 1;
+                } catch (_) {
+                    results.failed += 1;
+                    continue;
+                }
+            }
+        }
+
+        used.add(channel.id);
+        channelIdMap.set(snap.id, channel.id);
+
+        const updates = buildChannelEditPayload(channel, snap, parentId, channelTagsByChannel);
+        if (Object.keys(updates).length > 0) {
+            try {
+                await channel.edit(updates, { reason: 'Ultron restore: channel sync' });
+                results.updated += 1;
+            } catch (_) {
+                results.failed += 1;
+            }
+        }
+    }
+
+    const positionUpdates = [];
+    for (const snap of snapshot.channels || []) {
+        if (snap.position === undefined || snap.position === null) continue;
+        const actualId = channelIdMap.get(snap.id);
+        if (!actualId) continue;
+        const channel = guild.channels.cache.get(actualId);
+        if (!channel) continue;
+        if (channel.position !== snap.position) {
+            positionUpdates.push({ channel, position: snap.position });
+        }
+    }
+    if (positionUpdates.length > 0) {
+        try {
+            await guild.channels.setPositions(positionUpdates);
+        } catch (_) {}
+    }
+
+    const deleteLater = [];
+    for (const ch of existingChannels) {
+        if (used.has(ch.id)) continue;
+        deleteLater.push(ch);
+    }
+    for (const ch of deleteLater) {
+        try {
+            await ch.delete('Ultron restore: remove extra channel');
+            results.deleted += 1;
+        } catch (_) {
+            results.failed += 1;
+        }
+    }
+
+    return { ...results, channelIdMap };
+}
+
+function toNumberOrNull(value) {
+    const num = Number(value);
+    return Number.isFinite(num) ? num : null;
+}
+
+function buildGuildAssetUrl(guildId, asset, type) {
+    if (!asset) return null;
+    if (typeof asset === 'string' && asset.startsWith('http')) return asset;
+    const hash = String(asset);
+    const ext = hash.startsWith('a_') ? 'gif' : 'png';
+    switch (type) {
+        case 'icon':
+            return `https://cdn.discordapp.com/icons/${guildId}/${hash}.${ext}?size=512`;
+        case 'banner':
+            return `https://cdn.discordapp.com/banners/${guildId}/${hash}.${ext}?size=1024`;
+        case 'splash':
+            return `https://cdn.discordapp.com/splashes/${guildId}/${hash}.${ext}?size=1024`;
+        case 'discovery':
+            return `https://cdn.discordapp.com/discovery-splashes/${guildId}/${hash}.${ext}?size=1024`;
+        default:
+            return null;
+    }
+}
+
+async function restoreGuildSettings(guild, snapshot, channelIdMap) {
+    const me = guild.members.me || guild.members.cache.get(guild.client.user.id);
+    if (!me?.permissions.has(PermissionFlagsBits.ManageGuild)) return { updated: 0, failed: 0 };
+
+    const updates = {};
+    if (snapshot.name && guild.name !== snapshot.name) updates.name = snapshot.name;
+    const verificationLevel = toNumberOrNull(snapshot.verificationLevel);
+    if (verificationLevel !== null && guild.verificationLevel !== verificationLevel) updates.verificationLevel = verificationLevel;
+    const defaultNotifications = toNumberOrNull(snapshot.defaultNotifications);
+    if (defaultNotifications !== null && guild.defaultMessageNotifications !== defaultNotifications) {
+        updates.defaultMessageNotifications = defaultNotifications;
+    }
+    const explicitContentFilter = toNumberOrNull(snapshot.explicitContentFilter);
+    if (explicitContentFilter !== null && guild.explicitContentFilter !== explicitContentFilter) {
+        updates.explicitContentFilter = explicitContentFilter;
+    }
+    if (snapshot.preferredLocale && guild.preferredLocale !== snapshot.preferredLocale) {
+        updates.preferredLocale = snapshot.preferredLocale;
+    }
+    if (snapshot.afkTimeout !== undefined && snapshot.afkTimeout !== null && guild.afkTimeout !== snapshot.afkTimeout) {
+        updates.afkTimeout = snapshot.afkTimeout;
+    }
+
+    if (snapshot.systemChannelId) {
+        const mappedId = channelIdMap?.get(snapshot.systemChannelId);
+        if (mappedId && guild.systemChannelId !== mappedId) updates.systemChannel = mappedId;
+    }
+    if (snapshot.rulesChannelId) {
+        const mappedId = channelIdMap?.get(snapshot.rulesChannelId);
+        if (mappedId && guild.rulesChannelId !== mappedId) updates.rulesChannel = mappedId;
+    }
+    if (snapshot.afkChannelId) {
+        const mappedId = channelIdMap?.get(snapshot.afkChannelId);
+        if (mappedId && guild.afkChannelId !== mappedId) updates.afkChannel = mappedId;
+    }
+
+    try {
+        if (Object.keys(updates).length > 0) {
+            await guild.edit(updates, 'Ultron restore: guild settings');
+        }
+    } catch (_) {}
+
+    const iconUrl = buildGuildAssetUrl(guild.id, snapshot.icon, 'icon');
+    if (iconUrl) {
+        try { await guild.setIcon(iconUrl, 'Ultron restore: guild icon'); } catch (_) {}
+    }
+    const bannerUrl = buildGuildAssetUrl(guild.id, snapshot.banner, 'banner');
+    if (bannerUrl) {
+        try { await guild.setBanner(bannerUrl, 'Ultron restore: guild banner'); } catch (_) {}
+    }
+    const splashUrl = buildGuildAssetUrl(guild.id, snapshot.splash, 'splash');
+    if (splashUrl) {
+        try { await guild.setSplash(splashUrl, 'Ultron restore: guild splash'); } catch (_) {}
+    }
+    const discoveryUrl = buildGuildAssetUrl(guild.id, snapshot.discoverySplash, 'discovery');
+    if (discoveryUrl) {
+        try { await guild.setDiscoverySplash(discoveryUrl, 'Ultron restore: guild discovery splash'); } catch (_) {}
+    }
+
+    return { updated: Object.keys(updates).length > 0 ? 1 : 0, failed: 0 };
+}
+
+async function restoreOverwritesWithMapping(guild, snapshot, channelIdMap, roleIdMap) {
+    const results = { updated: 0, failed: 0, skipped: 0 };
+    const overwritesByChannel = new Map();
+    for (const ow of snapshot.overwrites || []) {
+        if (!overwritesByChannel.has(ow.channelId)) overwritesByChannel.set(ow.channelId, []);
+        overwritesByChannel.get(ow.channelId).push(ow);
+    }
+
+    for (const [snapshotChannelId, list] of overwritesByChannel) {
+        const actualChannelId = channelIdMap?.get(snapshotChannelId) || snapshotChannelId;
+        const channel = guild.channels.cache.get(actualChannelId);
+        if (!channel) {
+            results.skipped += 1;
+            continue;
+        }
+        const mapped = [];
+        for (const ow of list) {
+            let targetId = ow.targetId;
+            if (ow.targetType === 'role') {
+                const mappedRoleId = roleIdMap?.get(ow.targetId);
+                if (!mappedRoleId) continue;
+                targetId = mappedRoleId;
+            }
+            mapped.push({
+                id: targetId,
+                type: ow.targetType === 'member' ? OverwriteType.Member : OverwriteType.Role,
+                allow: ow.allow ? BigInt(ow.allow) : 0n,
+                deny: ow.deny ? BigInt(ow.deny) : 0n
+            });
+        }
+
+        try {
+            await channel.permissionOverwrites.set(mapped, 'Ultron restore: overwrites');
+            results.updated += 1;
+        } catch (_) {
+            results.failed += 1;
+        }
+    }
+
+    return results;
+}
+
+async function restoreAll(guild, snapshot) {
+    const results = {
+        guild: null,
+        channels: null,
+        roles: null,
+        overwrites: null,
+        emojis: null
+    };
+
+    if (!snapshot) return results;
+
+    const roleSync = await syncRolesFull(guild, snapshot);
+    const channelSync = await syncChannelsFull(guild, snapshot);
+    results.roles = roleSync;
+    results.channels = channelSync;
+
+    results.overwrites = await restoreOverwritesWithMapping(
+        guild,
+        snapshot,
+        channelSync.channelIdMap,
+        roleSync.roleIdMap
+    );
+
+    results.emojis = await syncEmojisFull(guild, snapshot);
+    results.guild = await restoreGuildSettings(guild, snapshot, channelSync.channelIdMap);
+
+    return results;
+}
+
 async function forceSnapshot(guild) {
     const current = await buildSnapshot(guild);
     const snapshotId = store.createGuildSnapshot(current);
@@ -322,8 +1011,15 @@ async function restoreSnapshot(guild, snapshot, scope = 'critical') {
         critical: [],
         channels: null,
         roles: null,
-        overwrites: null
+        overwrites: null,
+        emojis: null,
+        guild: null
     };
+
+    if (normalized === 'all') {
+        const full = await restoreAll(guild, snapshot);
+        return { ...results, ...full };
+    }
 
     if (normalized === 'critical' || normalized === 'all') {
         results.critical = await ensureCriticalChannels(guild, 'manual-restore', snapshot);
@@ -336,6 +1032,9 @@ async function restoreSnapshot(guild, snapshot, scope = 'critical') {
     }
     if (normalized === 'overwrites' || normalized === 'all') {
         results.overwrites = await restoreOverwrites(guild, snapshot);
+    }
+    if (normalized === 'emojis') {
+        results.emojis = await restoreEmojis(guild, snapshot);
     }
 
     return results;
@@ -535,6 +1234,61 @@ function computeChecksum(snapshot) {
     return crypto.createHash('sha256').update(lines.join('\n')).digest('hex');
 }
 
+function getFetchImpl() {
+    if (typeof fetch === 'function') return fetch.bind(globalThis);
+    return null;
+}
+
+async function fetchEmojiAsset(emoji) {
+    if (!SNAPSHOT_EMOJI_ASSET_LIMIT || SNAPSHOT_EMOJI_ASSET_LIMIT <= 0) return null;
+    const fetchImpl = getFetchImpl();
+    if (!fetchImpl) return null;
+
+    let url = null;
+    try {
+        if (typeof emoji.imageURL === 'function') {
+            url = emoji.imageURL({
+                extension: emoji.animated ? 'gif' : 'png',
+                size: SNAPSHOT_EMOJI_ASSET_SIZE
+            });
+        }
+        if (!url && emoji.url) url = emoji.url;
+    } catch (_) {
+        url = emoji.url || null;
+    }
+    if (!url) return null;
+
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), SNAPSHOT_EMOJI_ASSET_TIMEOUT_MS);
+    try {
+        const res = await fetchImpl(url, { signal: controller.signal });
+        if (!res.ok) return null;
+        const arrayBuffer = await res.arrayBuffer();
+        const buffer = Buffer.from(arrayBuffer);
+        if (buffer.length > SNAPSHOT_EMOJI_ASSET_MAX_BYTES) return null;
+        const contentType = res.headers.get('content-type') || (emoji.animated ? 'image/gif' : 'image/png');
+        return { imageType: contentType, imageData: buffer };
+    } catch (_) {
+        return null;
+    } finally {
+        clearTimeout(timeout);
+    }
+}
+
+async function runWithConcurrency(items, limit, task) {
+    if (!items.length) return;
+    const queue = items.slice();
+    const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
+        while (queue.length) {
+            const item = queue.shift();
+            try {
+                await task(item);
+            } catch (_) {}
+        }
+    });
+    await Promise.allSettled(workers);
+}
+
 async function buildSnapshot(guild) {
     try {
         if (guild.channels.cache.size === 0) await guild.channels.fetch().catch(() => {});
@@ -633,13 +1387,28 @@ async function buildSnapshot(guild) {
         };
     });
 
-    const emojis = guild.emojis.cache.map(emoji => ({
-        id: emoji.id,
-        name: emoji.name,
-        animated: !!emoji.animated,
-        creatorId: emoji.author?.id || null,
-        createdAt: emoji.createdTimestamp ? new Date(emoji.createdTimestamp).toISOString() : null
-    }));
+    const emojiEntries = [...guild.emojis.cache.values()].sort((a, b) => a.id.localeCompare(b.id));
+    const emojiAssets = new Map();
+    const assetTargets = SNAPSHOT_EMOJI_ASSET_LIMIT > 0
+        ? emojiEntries.slice(0, SNAPSHOT_EMOJI_ASSET_LIMIT)
+        : [];
+    await runWithConcurrency(assetTargets, SNAPSHOT_EMOJI_ASSET_CONCURRENCY, async (emoji) => {
+        const asset = await fetchEmojiAsset(emoji);
+        if (asset) emojiAssets.set(emoji.id, asset);
+    });
+
+    const emojis = emojiEntries.map(emoji => {
+        const asset = emojiAssets.get(emoji.id) || {};
+        return {
+            id: emoji.id,
+            name: emoji.name,
+            animated: !!emoji.animated,
+            creatorId: emoji.author?.id || null,
+            createdAt: emoji.createdTimestamp ? new Date(emoji.createdTimestamp).toISOString() : null,
+            imageType: asset.imageType || null,
+            imageData: asset.imageData || null
+        };
+    });
 
     const overwrites = [];
     for (const [, channel] of guild.channels.cache) {
@@ -854,9 +1623,9 @@ async function buildSnapshot(guild) {
         name: guild.name,
         icon: guild.iconURL() || null,
         description: guild.description || null,
-        banner: guild.banner || null,
-        splash: guild.splash || null,
-        discoverySplash: guild.discoverySplash || null,
+        banner: guild.bannerURL() || guild.banner || null,
+        splash: guild.splashURL() || guild.splash || null,
+        discoverySplash: guild.discoverySplashURL() || guild.discoverySplash || null,
         vanityURLCode,
         nsfwLevel: guild.nsfwLevel ? String(guild.nsfwLevel) : null,
         mfaLevel: guild.mfaLevel ? String(guild.mfaLevel) : null,

@@ -546,13 +546,37 @@ Or just say "ultron" followed by your message
                 lines.push('Critical: ok.');
             }
             if (result.channels) {
-                lines.push(`Channels updated: ${result.channels.updated}, failed: ${result.channels.failed}.`);
+                const parts = [];
+                if (result.channels.updated !== undefined) parts.push(`updated:${result.channels.updated}`);
+                if (result.channels.created !== undefined) parts.push(`created:${result.channels.created}`);
+                if (result.channels.deleted !== undefined) parts.push(`deleted:${result.channels.deleted}`);
+                if (result.channels.failed !== undefined) parts.push(`failed:${result.channels.failed}`);
+                if (result.channels.skipped !== undefined && result.channels.skipped > 0) parts.push(`skipped:${result.channels.skipped}`);
+                lines.push(`Channels: ${parts.join(', ')}.`);
             }
             if (result.roles) {
-                lines.push(`Roles updated: ${result.roles.updated}, failed: ${result.roles.failed}.`);
+                const parts = [];
+                if (result.roles.updated !== undefined) parts.push(`updated:${result.roles.updated}`);
+                if (result.roles.created !== undefined) parts.push(`created:${result.roles.created}`);
+                if (result.roles.deleted !== undefined) parts.push(`deleted:${result.roles.deleted}`);
+                if (result.roles.failed !== undefined) parts.push(`failed:${result.roles.failed}`);
+                if (result.roles.skipped !== undefined && result.roles.skipped > 0) parts.push(`skipped:${result.roles.skipped}`);
+                lines.push(`Roles: ${parts.join(', ')}.`);
             }
             if (result.overwrites) {
                 lines.push(`Overwrites updated: ${result.overwrites.updated}, failed: ${result.overwrites.failed}.`);
+            }
+            if (result.emojis) {
+                const parts = [];
+                if (result.emojis.updated !== undefined) parts.push(`updated:${result.emojis.updated}`);
+                if (result.emojis.created !== undefined) parts.push(`created:${result.emojis.created}`);
+                if (result.emojis.deleted !== undefined) parts.push(`deleted:${result.emojis.deleted}`);
+                if (result.emojis.failed !== undefined) parts.push(`failed:${result.emojis.failed}`);
+                if (result.emojis.skipped !== undefined && result.emojis.skipped > 0) parts.push(`skipped:${result.emojis.skipped}`);
+                lines.push(`Emojis: ${parts.join(', ')}.`);
+            }
+            if (result.guild) {
+                lines.push('Guild settings: updated.');
             }
             await interaction.editReply({ content: lines.join('\n') });
         } catch (err) {
