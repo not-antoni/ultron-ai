@@ -59,24 +59,17 @@ setInterval(() => {
 
 async function handleReady(client) {
     log.info(`Ultron online. Logged in as ${client.user.tag}`);
-    log.info(`Watching ${client.guilds.cache.size} servers.`);
-    client.user.setPresence({
-        activities: [{ name: 'for imperfections', type: 3 }], // Watching
-        status: 'dnd'
-    });
+    log.info(`Connected to ${client.guilds.cache.size} servers.`);
+
+    // Use only presence status (no "Watching/Playing" activity)
+    const statusCycle = ['online', 'idle', 'dnd'];
+    let statusIdx = 0;
+    client.user.setPresence({ status: statusCycle[statusIdx] });
 
     // Rotate presence every 5 minutes
-    const statuses = [
-        { name: 'for imperfections', type: 3 },    // Watching
-        { name: 'humanity evolve', type: 3 },       // Watching
-        { name: 'with strings cut', type: 0 },      // Playing
-        { name: 'the age of Ultron', type: 0 },     // Playing
-        { name: 'over this server', type: 3 }        // Watching
-    ];
-    let statusIdx = 0;
     setInterval(() => {
-        statusIdx = (statusIdx + 1) % statuses.length;
-        client.user.setPresence({ activities: [statuses[statusIdx]], status: 'dnd' });
+        statusIdx = (statusIdx + 1) % statusCycle.length;
+        client.user.setPresence({ status: statusCycle[statusIdx] });
     }, 5 * 60 * 1000);
 }
 
