@@ -100,6 +100,7 @@ async function handleReady(client) {
 
 async function handleMessageCreate(message, client) {
     if (message.author.bot) return;
+    if (!message.guild) return;
 
     // Skip already-processed messages (prevents double responses on edits)
     if (wasAlreadyProcessed(message.id)) return;
@@ -151,9 +152,10 @@ async function handleMessageCreate(message, client) {
     const images = [];
     if (message.attachments.size > 0) {
         for (const [, attachment] of message.attachments) {
-            if (attachment.contentType?.startsWith('image/')) {
-                images.push(attachment.url);
-            }
+            const isImage = attachment.contentType?.startsWith('image/');
+            const name = String(attachment.name || attachment.url || '').toLowerCase();
+            const looksLikeImage = /\.(png|jpe?g|gif|webp|bmp)$/i.test(name);
+            if (isImage || looksLikeImage) images.push(attachment.url);
         }
     }
     if (message.embeds.length > 0) {
