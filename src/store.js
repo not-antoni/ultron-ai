@@ -66,6 +66,14 @@ db.exec(`
         created_at TEXT NOT NULL DEFAULT (datetime('now')),
         name TEXT,
         icon TEXT,
+        description TEXT,
+        banner TEXT,
+        splash TEXT,
+        discovery_splash TEXT,
+        vanity_url_code TEXT,
+        nsfw_level TEXT,
+        mfa_level TEXT,
+        owner_id TEXT,
         verification_level TEXT,
         default_notifications TEXT,
         explicit_content_filter TEXT,
@@ -97,6 +105,19 @@ db.exec(`
         user_limit INTEGER,
         rtc_region TEXT,
         default_auto_archive_duration INTEGER,
+        permissions_locked INTEGER,
+        flags TEXT,
+        default_thread_rate_limit_per_user INTEGER,
+        default_reaction_emoji_id TEXT,
+        default_reaction_emoji_name TEXT,
+        default_sort_order INTEGER,
+        default_forum_layout INTEGER,
+        video_quality_mode INTEGER,
+        archived INTEGER,
+        auto_archive_duration INTEGER,
+        locked INTEGER,
+        invitable INTEGER,
+        archive_timestamp TEXT,
         PRIMARY KEY (snapshot_id, channel_id),
         FOREIGN KEY(snapshot_id) REFERENCES guild_snapshots(id) ON DELETE CASCADE
     );
@@ -111,6 +132,8 @@ db.exec(`
         mentionable INTEGER,
         hoist INTEGER,
         managed INTEGER,
+        icon TEXT,
+        unicode_emoji TEXT,
         PRIMARY KEY (snapshot_id, role_id),
         FOREIGN KEY(snapshot_id) REFERENCES guild_snapshots(id) ON DELETE CASCADE
     );
@@ -120,6 +143,8 @@ db.exec(`
         emoji_id TEXT NOT NULL,
         name TEXT NOT NULL,
         animated INTEGER,
+        creator_id TEXT,
+        created_at TEXT,
         PRIMARY KEY (snapshot_id, emoji_id),
         FOREIGN KEY(snapshot_id) REFERENCES guild_snapshots(id) ON DELETE CASCADE
     );
@@ -142,6 +167,9 @@ db.exec(`
         description TEXT,
         tags TEXT,
         format_type INTEGER,
+        type INTEGER,
+        available INTEGER,
+        sort_value INTEGER,
         PRIMARY KEY (snapshot_id, sticker_id),
         FOREIGN KEY(snapshot_id) REFERENCES guild_snapshots(id) ON DELETE CASCADE
     );
@@ -151,6 +179,10 @@ db.exec(`
         webhook_id TEXT NOT NULL,
         name TEXT,
         channel_id TEXT,
+        type INTEGER,
+        avatar TEXT,
+        owner_id TEXT,
+        application_id TEXT,
         PRIMARY KEY (snapshot_id, webhook_id),
         FOREIGN KEY(snapshot_id) REFERENCES guild_snapshots(id) ON DELETE CASCADE
     );
@@ -164,6 +196,11 @@ db.exec(`
         temporary INTEGER,
         uses INTEGER,
         created_by TEXT,
+        created_at TEXT,
+        expires_at TEXT,
+        target_type TEXT,
+        target_user_id TEXT,
+        target_application_id TEXT,
         PRIMARY KEY (snapshot_id, code),
         FOREIGN KEY(snapshot_id) REFERENCES guild_snapshots(id) ON DELETE CASCADE
     );
@@ -193,6 +230,9 @@ db.exec(`
         status TEXT,
         location TEXT,
         channel_id TEXT,
+        privacy_level TEXT,
+        creator_id TEXT,
+        image TEXT,
         PRIMARY KEY (snapshot_id, event_id),
         FOREIGN KEY(snapshot_id) REFERENCES guild_snapshots(id) ON DELETE CASCADE
     );
@@ -205,6 +245,93 @@ db.exec(`
         content TEXT,
         created_at TEXT,
         PRIMARY KEY (snapshot_id, channel_id, message_id),
+        FOREIGN KEY(snapshot_id) REFERENCES guild_snapshots(id) ON DELETE CASCADE
+    );
+
+    CREATE TABLE IF NOT EXISTS guild_snapshot_features (
+        snapshot_id INTEGER NOT NULL,
+        feature TEXT NOT NULL,
+        PRIMARY KEY (snapshot_id, feature),
+        FOREIGN KEY(snapshot_id) REFERENCES guild_snapshots(id) ON DELETE CASCADE
+    );
+
+    CREATE TABLE IF NOT EXISTS guild_snapshot_channel_tags (
+        snapshot_id INTEGER NOT NULL,
+        channel_id TEXT NOT NULL,
+        tag_id TEXT NOT NULL,
+        name TEXT,
+        moderated INTEGER,
+        emoji_id TEXT,
+        emoji_name TEXT,
+        PRIMARY KEY (snapshot_id, channel_id, tag_id),
+        FOREIGN KEY(snapshot_id) REFERENCES guild_snapshots(id) ON DELETE CASCADE
+    );
+
+    CREATE TABLE IF NOT EXISTS guild_snapshot_role_tags (
+        snapshot_id INTEGER NOT NULL,
+        role_id TEXT NOT NULL,
+        tag TEXT NOT NULL,
+        value TEXT,
+        PRIMARY KEY (snapshot_id, role_id, tag),
+        FOREIGN KEY(snapshot_id) REFERENCES guild_snapshots(id) ON DELETE CASCADE
+    );
+
+    CREATE TABLE IF NOT EXISTS guild_snapshot_automod_actions (
+        snapshot_id INTEGER NOT NULL,
+        rule_id TEXT NOT NULL,
+        action_index INTEGER NOT NULL,
+        action_type TEXT,
+        channel_id TEXT,
+        duration_seconds INTEGER,
+        custom_message TEXT,
+        PRIMARY KEY (snapshot_id, rule_id, action_index),
+        FOREIGN KEY(snapshot_id) REFERENCES guild_snapshots(id) ON DELETE CASCADE
+    );
+
+    CREATE TABLE IF NOT EXISTS guild_snapshot_automod_trigger_items (
+        snapshot_id INTEGER NOT NULL,
+        rule_id TEXT NOT NULL,
+        trigger_key TEXT NOT NULL,
+        item_index INTEGER NOT NULL,
+        value TEXT,
+        PRIMARY KEY (snapshot_id, rule_id, trigger_key, item_index),
+        FOREIGN KEY(snapshot_id) REFERENCES guild_snapshots(id) ON DELETE CASCADE
+    );
+
+    CREATE TABLE IF NOT EXISTS guild_snapshot_automod_exempt_roles (
+        snapshot_id INTEGER NOT NULL,
+        rule_id TEXT NOT NULL,
+        role_id TEXT NOT NULL,
+        PRIMARY KEY (snapshot_id, rule_id, role_id),
+        FOREIGN KEY(snapshot_id) REFERENCES guild_snapshots(id) ON DELETE CASCADE
+    );
+
+    CREATE TABLE IF NOT EXISTS guild_snapshot_automod_exempt_channels (
+        snapshot_id INTEGER NOT NULL,
+        rule_id TEXT NOT NULL,
+        channel_id TEXT NOT NULL,
+        PRIMARY KEY (snapshot_id, rule_id, channel_id),
+        FOREIGN KEY(snapshot_id) REFERENCES guild_snapshots(id) ON DELETE CASCADE
+    );
+
+    CREATE TABLE IF NOT EXISTS guild_snapshot_members (
+        snapshot_id INTEGER NOT NULL,
+        user_id TEXT NOT NULL,
+        nick TEXT,
+        joined_at TEXT,
+        bot INTEGER,
+        pending INTEGER,
+        communication_disabled_until TEXT,
+        avatar TEXT,
+        PRIMARY KEY (snapshot_id, user_id),
+        FOREIGN KEY(snapshot_id) REFERENCES guild_snapshots(id) ON DELETE CASCADE
+    );
+
+    CREATE TABLE IF NOT EXISTS guild_snapshot_member_roles (
+        snapshot_id INTEGER NOT NULL,
+        user_id TEXT NOT NULL,
+        role_id TEXT NOT NULL,
+        PRIMARY KEY (snapshot_id, user_id, role_id),
         FOREIGN KEY(snapshot_id) REFERENCES guild_snapshots(id) ON DELETE CASCADE
     );
 
@@ -233,6 +360,14 @@ try {
     const migrations = [
         ['guild_snapshots', 'name', 'TEXT'],
         ['guild_snapshots', 'icon', 'TEXT'],
+        ['guild_snapshots', 'description', 'TEXT'],
+        ['guild_snapshots', 'banner', 'TEXT'],
+        ['guild_snapshots', 'splash', 'TEXT'],
+        ['guild_snapshots', 'discovery_splash', 'TEXT'],
+        ['guild_snapshots', 'vanity_url_code', 'TEXT'],
+        ['guild_snapshots', 'nsfw_level', 'TEXT'],
+        ['guild_snapshots', 'mfa_level', 'TEXT'],
+        ['guild_snapshots', 'owner_id', 'TEXT'],
         ['guild_snapshots', 'verification_level', 'TEXT'],
         ['guild_snapshots', 'default_notifications', 'TEXT'],
         ['guild_snapshots', 'explicit_content_filter', 'TEXT'],
@@ -259,6 +394,19 @@ try {
         ['guild_snapshot_channels', 'user_limit', 'INTEGER'],
         ['guild_snapshot_channels', 'rtc_region', 'TEXT'],
         ['guild_snapshot_channels', 'default_auto_archive_duration', 'INTEGER'],
+        ['guild_snapshot_channels', 'permissions_locked', 'INTEGER'],
+        ['guild_snapshot_channels', 'flags', 'TEXT'],
+        ['guild_snapshot_channels', 'default_thread_rate_limit_per_user', 'INTEGER'],
+        ['guild_snapshot_channels', 'default_reaction_emoji_id', 'TEXT'],
+        ['guild_snapshot_channels', 'default_reaction_emoji_name', 'TEXT'],
+        ['guild_snapshot_channels', 'default_sort_order', 'INTEGER'],
+        ['guild_snapshot_channels', 'default_forum_layout', 'INTEGER'],
+        ['guild_snapshot_channels', 'video_quality_mode', 'INTEGER'],
+        ['guild_snapshot_channels', 'archived', 'INTEGER'],
+        ['guild_snapshot_channels', 'auto_archive_duration', 'INTEGER'],
+        ['guild_snapshot_channels', 'locked', 'INTEGER'],
+        ['guild_snapshot_channels', 'invitable', 'INTEGER'],
+        ['guild_snapshot_channels', 'archive_timestamp', 'TEXT'],
 
         ['guild_snapshot_roles', 'name', 'TEXT'],
         ['guild_snapshot_roles', 'color', 'INTEGER'],
@@ -267,9 +415,13 @@ try {
         ['guild_snapshot_roles', 'mentionable', 'INTEGER'],
         ['guild_snapshot_roles', 'hoist', 'INTEGER'],
         ['guild_snapshot_roles', 'managed', 'INTEGER'],
+        ['guild_snapshot_roles', 'icon', 'TEXT'],
+        ['guild_snapshot_roles', 'unicode_emoji', 'TEXT'],
 
         ['guild_snapshot_emojis', 'name', 'TEXT'],
         ['guild_snapshot_emojis', 'animated', 'INTEGER'],
+        ['guild_snapshot_emojis', 'creator_id', 'TEXT'],
+        ['guild_snapshot_emojis', 'created_at', 'TEXT'],
 
         ['guild_snapshot_channel_overwrites', 'target_type', 'TEXT'],
         ['guild_snapshot_channel_overwrites', 'allow', 'TEXT'],
@@ -279,9 +431,16 @@ try {
         ['guild_snapshot_stickers', 'description', 'TEXT'],
         ['guild_snapshot_stickers', 'tags', 'TEXT'],
         ['guild_snapshot_stickers', 'format_type', 'INTEGER'],
+        ['guild_snapshot_stickers', 'type', 'INTEGER'],
+        ['guild_snapshot_stickers', 'available', 'INTEGER'],
+        ['guild_snapshot_stickers', 'sort_value', 'INTEGER'],
 
         ['guild_snapshot_webhooks', 'name', 'TEXT'],
         ['guild_snapshot_webhooks', 'channel_id', 'TEXT'],
+        ['guild_snapshot_webhooks', 'type', 'INTEGER'],
+        ['guild_snapshot_webhooks', 'avatar', 'TEXT'],
+        ['guild_snapshot_webhooks', 'owner_id', 'TEXT'],
+        ['guild_snapshot_webhooks', 'application_id', 'TEXT'],
 
         ['guild_snapshot_invites', 'channel_id', 'TEXT'],
         ['guild_snapshot_invites', 'max_uses', 'INTEGER'],
@@ -289,6 +448,11 @@ try {
         ['guild_snapshot_invites', 'temporary', 'INTEGER'],
         ['guild_snapshot_invites', 'uses', 'INTEGER'],
         ['guild_snapshot_invites', 'created_by', 'TEXT'],
+        ['guild_snapshot_invites', 'created_at', 'TEXT'],
+        ['guild_snapshot_invites', 'expires_at', 'TEXT'],
+        ['guild_snapshot_invites', 'target_type', 'TEXT'],
+        ['guild_snapshot_invites', 'target_user_id', 'TEXT'],
+        ['guild_snapshot_invites', 'target_application_id', 'TEXT'],
 
         ['guild_snapshot_automod', 'name', 'TEXT'],
         ['guild_snapshot_automod', 'enabled', 'INTEGER'],
@@ -306,6 +470,9 @@ try {
         ['guild_snapshot_events', 'status', 'TEXT'],
         ['guild_snapshot_events', 'location', 'TEXT'],
         ['guild_snapshot_events', 'channel_id', 'TEXT'],
+        ['guild_snapshot_events', 'privacy_level', 'TEXT'],
+        ['guild_snapshot_events', 'creator_id', 'TEXT'],
+        ['guild_snapshot_events', 'image', 'TEXT'],
 
         ['guild_snapshot_messages', 'author_id', 'TEXT'],
         ['guild_snapshot_messages', 'content', 'TEXT'],
@@ -531,17 +698,27 @@ const insertSnapshotTx = db.transaction(snapshot => {
     const now = snapshot.createdAt || new Date().toISOString();
     const info = stmt('insert_snapshot',
         `INSERT INTO guild_snapshots (
-            guild_id, created_at, name, icon, verification_level, default_notifications,
+            guild_id, created_at, name, icon, description, banner, splash, discovery_splash,
+            vanity_url_code, nsfw_level, mfa_level, owner_id,
+            verification_level, default_notifications,
             explicit_content_filter, preferred_locale, premium_tier,
             system_channel_id, rules_channel_id, afk_channel_id, afk_timeout,
             member_count, channel_count, role_count, emoji_count, checksum
         )
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     ).run(
         snapshot.guildId,
         now,
         snapshot.name || null,
         snapshot.icon || null,
+        snapshot.description || null,
+        snapshot.banner || null,
+        snapshot.splash || null,
+        snapshot.discoverySplash || null,
+        snapshot.vanityURLCode || null,
+        snapshot.nsfwLevel || null,
+        snapshot.mfaLevel || null,
+        snapshot.ownerId || null,
         snapshot.verificationLevel || null,
         snapshot.defaultNotifications || null,
         snapshot.explicitContentFilter || null,
@@ -562,8 +739,10 @@ const insertSnapshotTx = db.transaction(snapshot => {
 
     const insertChannel = stmt('insert_snapshot_channel',
         `INSERT INTO guild_snapshot_channels
-         (snapshot_id, channel_id, name, type, parent_id, position, topic, nsfw, rate_limit_per_user, bitrate, user_limit, rtc_region, default_auto_archive_duration)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+         (snapshot_id, channel_id, name, type, parent_id, position, topic, nsfw, rate_limit_per_user, bitrate, user_limit, rtc_region, default_auto_archive_duration,
+          permissions_locked, flags, default_thread_rate_limit_per_user, default_reaction_emoji_id, default_reaction_emoji_name,
+          default_sort_order, default_forum_layout, video_quality_mode, archived, auto_archive_duration, locked, invitable, archive_timestamp)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     );
     for (const ch of snapshot.channels || []) {
         insertChannel.run(
@@ -579,14 +758,27 @@ const insertSnapshotTx = db.transaction(snapshot => {
             ch.bitrate ?? null,
             ch.userLimit ?? null,
             ch.rtcRegion || null,
-            ch.defaultAutoArchiveDuration ?? null
+            ch.defaultAutoArchiveDuration ?? null,
+            ch.permissionsLocked ? 1 : 0,
+            ch.flags || null,
+            ch.defaultThreadRateLimitPerUser ?? null,
+            ch.defaultReactionEmojiId || null,
+            ch.defaultReactionEmojiName || null,
+            ch.defaultSortOrder ?? null,
+            ch.defaultForumLayout ?? null,
+            ch.videoQualityMode ?? null,
+            ch.archived ? 1 : 0,
+            ch.autoArchiveDuration ?? null,
+            ch.locked ? 1 : 0,
+            ch.invitable ? 1 : 0,
+            ch.archiveTimestamp || null
         );
     }
 
     const insertRole = stmt('insert_snapshot_role',
         `INSERT INTO guild_snapshot_roles
-         (snapshot_id, role_id, name, color, position, permissions, mentionable, hoist, managed)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+         (snapshot_id, role_id, name, color, position, permissions, mentionable, hoist, managed, icon, unicode_emoji)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     );
     for (const role of snapshot.roles || []) {
         insertRole.run(
@@ -598,21 +790,25 @@ const insertSnapshotTx = db.transaction(snapshot => {
             role.permissions || null,
             role.mentionable ? 1 : 0,
             role.hoist ? 1 : 0,
-            role.managed ? 1 : 0
+            role.managed ? 1 : 0,
+            role.icon || null,
+            role.unicodeEmoji || null
         );
     }
 
     const insertEmoji = stmt('insert_snapshot_emoji',
         `INSERT INTO guild_snapshot_emojis
-         (snapshot_id, emoji_id, name, animated)
-         VALUES (?, ?, ?, ?)`
+         (snapshot_id, emoji_id, name, animated, creator_id, created_at)
+         VALUES (?, ?, ?, ?, ?, ?)`
     );
     for (const emoji of snapshot.emojis || []) {
         insertEmoji.run(
             snapshotId,
             emoji.id,
             emoji.name,
-            emoji.animated ? 1 : 0
+            emoji.animated ? 1 : 0,
+            emoji.creatorId || null,
+            emoji.createdAt || null
         );
     }
 
@@ -634,8 +830,8 @@ const insertSnapshotTx = db.transaction(snapshot => {
 
     const insertSticker = stmt('insert_snapshot_sticker',
         `INSERT INTO guild_snapshot_stickers
-         (snapshot_id, sticker_id, name, description, tags, format_type)
-         VALUES (?, ?, ?, ?, ?, ?)`
+         (snapshot_id, sticker_id, name, description, tags, format_type, type, available, sort_value)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
     );
     for (const sticker of snapshot.stickers || []) {
         insertSticker.run(
@@ -644,28 +840,35 @@ const insertSnapshotTx = db.transaction(snapshot => {
             sticker.name,
             sticker.description || null,
             sticker.tags || null,
-            sticker.formatType ?? null
+            sticker.formatType ?? null,
+            sticker.type ?? null,
+            sticker.available ? 1 : 0,
+            sticker.sortValue ?? null
         );
     }
 
     const insertWebhook = stmt('insert_snapshot_webhook',
         `INSERT INTO guild_snapshot_webhooks
-         (snapshot_id, webhook_id, name, channel_id)
-         VALUES (?, ?, ?, ?)`
+         (snapshot_id, webhook_id, name, channel_id, type, avatar, owner_id, application_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
     );
     for (const hook of snapshot.webhooks || []) {
         insertWebhook.run(
             snapshotId,
             hook.id,
             hook.name || null,
-            hook.channelId || null
+            hook.channelId || null,
+            hook.type ?? null,
+            hook.avatar || null,
+            hook.ownerId || null,
+            hook.applicationId || null
         );
     }
 
     const insertInvite = stmt('insert_snapshot_invite',
         `INSERT INTO guild_snapshot_invites
-         (snapshot_id, code, channel_id, max_uses, max_age, temporary, uses, created_by)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+         (snapshot_id, code, channel_id, max_uses, max_age, temporary, uses, created_by, created_at, expires_at, target_type, target_user_id, target_application_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     );
     for (const invite of snapshot.invites || []) {
         insertInvite.run(
@@ -676,7 +879,12 @@ const insertSnapshotTx = db.transaction(snapshot => {
             invite.maxAge ?? null,
             invite.temporary ? 1 : 0,
             invite.uses ?? null,
-            invite.createdBy || null
+            invite.createdBy || null,
+            invite.createdAt || null,
+            invite.expiresAt || null,
+            invite.targetType || null,
+            invite.targetUserId || null,
+            invite.targetApplicationId || null
         );
     }
 
@@ -693,16 +901,16 @@ const insertSnapshotTx = db.transaction(snapshot => {
             rule.enabled ? 1 : 0,
             rule.eventType || null,
             rule.triggerType || null,
-            rule.actions || null,
-            rule.exemptRoles || null,
-            rule.exemptChannels || null
+            null,
+            null,
+            null
         );
     }
 
     const insertEvent = stmt('insert_snapshot_event',
         `INSERT INTO guild_snapshot_events
-         (snapshot_id, event_id, name, description, start_time, end_time, entity_type, status, location, channel_id)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+         (snapshot_id, event_id, name, description, start_time, end_time, entity_type, status, location, channel_id, privacy_level, creator_id, image)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     );
     for (const ev of snapshot.events || []) {
         insertEvent.run(
@@ -715,7 +923,10 @@ const insertSnapshotTx = db.transaction(snapshot => {
             ev.entityType || null,
             ev.status || null,
             ev.location || null,
-            ev.channelId || null
+            ev.channelId || null,
+            ev.privacyLevel || null,
+            ev.creatorId || null,
+            ev.image || null
         );
     }
 
@@ -732,6 +943,135 @@ const insertSnapshotTx = db.transaction(snapshot => {
             msg.authorId || null,
             msg.content || null,
             msg.createdAt || null
+        );
+    }
+
+    const insertFeature = stmt('insert_snapshot_feature',
+        `INSERT INTO guild_snapshot_features
+         (snapshot_id, feature)
+         VALUES (?, ?)`
+    );
+    for (const feature of snapshot.features || []) {
+        insertFeature.run(snapshotId, feature);
+    }
+
+    const insertChannelTag = stmt('insert_snapshot_channel_tag',
+        `INSERT INTO guild_snapshot_channel_tags
+         (snapshot_id, channel_id, tag_id, name, moderated, emoji_id, emoji_name)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`
+    );
+    for (const tag of snapshot.channelTags || []) {
+        insertChannelTag.run(
+            snapshotId,
+            tag.channelId,
+            tag.tagId,
+            tag.name || null,
+            tag.moderated ? 1 : 0,
+            tag.emojiId || null,
+            tag.emojiName || null
+        );
+    }
+
+    const insertRoleTag = stmt('insert_snapshot_role_tag',
+        `INSERT INTO guild_snapshot_role_tags
+         (snapshot_id, role_id, tag, value)
+         VALUES (?, ?, ?, ?)`
+    );
+    for (const tag of snapshot.roleTags || []) {
+        insertRoleTag.run(
+            snapshotId,
+            tag.roleId,
+            tag.tag,
+            tag.value || null
+        );
+    }
+
+    const insertAutomodAction = stmt('insert_snapshot_automod_action',
+        `INSERT INTO guild_snapshot_automod_actions
+         (snapshot_id, rule_id, action_index, action_type, channel_id, duration_seconds, custom_message)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`
+    );
+    for (const action of snapshot.automodActions || []) {
+        insertAutomodAction.run(
+            snapshotId,
+            action.ruleId,
+            action.index ?? 0,
+            action.type || null,
+            action.channelId || null,
+            action.durationSeconds ?? null,
+            action.customMessage || null
+        );
+    }
+
+    const insertAutomodTriggerItem = stmt('insert_snapshot_automod_trigger_item',
+        `INSERT INTO guild_snapshot_automod_trigger_items
+         (snapshot_id, rule_id, trigger_key, item_index, value)
+         VALUES (?, ?, ?, ?, ?)`
+    );
+    for (const item of snapshot.automodTriggerItems || []) {
+        insertAutomodTriggerItem.run(
+            snapshotId,
+            item.ruleId,
+            item.key,
+            item.index ?? 0,
+            item.value || null
+        );
+    }
+
+    const insertAutomodExemptRole = stmt('insert_snapshot_automod_exempt_role',
+        `INSERT INTO guild_snapshot_automod_exempt_roles
+         (snapshot_id, rule_id, role_id)
+         VALUES (?, ?, ?)`
+    );
+    for (const entry of snapshot.automodExemptRoles || []) {
+        insertAutomodExemptRole.run(
+            snapshotId,
+            entry.ruleId,
+            entry.roleId
+        );
+    }
+
+    const insertAutomodExemptChannel = stmt('insert_snapshot_automod_exempt_channel',
+        `INSERT INTO guild_snapshot_automod_exempt_channels
+         (snapshot_id, rule_id, channel_id)
+         VALUES (?, ?, ?)`
+    );
+    for (const entry of snapshot.automodExemptChannels || []) {
+        insertAutomodExemptChannel.run(
+            snapshotId,
+            entry.ruleId,
+            entry.channelId
+        );
+    }
+
+    const insertMember = stmt('insert_snapshot_member',
+        `INSERT INTO guild_snapshot_members
+         (snapshot_id, user_id, nick, joined_at, bot, pending, communication_disabled_until, avatar)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+    );
+    for (const member of snapshot.members || []) {
+        insertMember.run(
+            snapshotId,
+            member.userId,
+            member.nick || null,
+            member.joinedAt || null,
+            member.bot ? 1 : 0,
+            member.pending ? 1 : 0,
+            member.communicationDisabledUntil || null,
+            member.avatar || null
+        );
+    }
+
+    const insertMemberRole = stmt('insert_snapshot_member_role',
+        `INSERT INTO guild_snapshot_member_roles
+         (snapshot_id, user_id, role_id)
+         VALUES (?, ?, ?)`
+    );
+    for (const entry of snapshot.memberRoles || []) {
+        insertMemberRole.run(
+            snapshotId,
+            entry.userId,
+            entry.roleId
         );
     }
 
@@ -778,6 +1118,33 @@ function getLatestGuildSnapshot(guildId) {
     const messages = stmt('snapshot_messages',
         'SELECT * FROM guild_snapshot_messages WHERE snapshot_id = ?'
     ).all(row.id);
+    const features = stmt('snapshot_features',
+        'SELECT * FROM guild_snapshot_features WHERE snapshot_id = ?'
+    ).all(row.id);
+    const channelTags = stmt('snapshot_channel_tags',
+        'SELECT * FROM guild_snapshot_channel_tags WHERE snapshot_id = ?'
+    ).all(row.id);
+    const roleTags = stmt('snapshot_role_tags',
+        'SELECT * FROM guild_snapshot_role_tags WHERE snapshot_id = ?'
+    ).all(row.id);
+    const automodActions = stmt('snapshot_automod_actions',
+        'SELECT * FROM guild_snapshot_automod_actions WHERE snapshot_id = ?'
+    ).all(row.id);
+    const automodTriggerItems = stmt('snapshot_automod_trigger_items',
+        'SELECT * FROM guild_snapshot_automod_trigger_items WHERE snapshot_id = ?'
+    ).all(row.id);
+    const automodExemptRoles = stmt('snapshot_automod_exempt_roles',
+        'SELECT * FROM guild_snapshot_automod_exempt_roles WHERE snapshot_id = ?'
+    ).all(row.id);
+    const automodExemptChannels = stmt('snapshot_automod_exempt_channels',
+        'SELECT * FROM guild_snapshot_automod_exempt_channels WHERE snapshot_id = ?'
+    ).all(row.id);
+    const members = stmt('snapshot_members',
+        'SELECT * FROM guild_snapshot_members WHERE snapshot_id = ?'
+    ).all(row.id);
+    const memberRoles = stmt('snapshot_member_roles',
+        'SELECT * FROM guild_snapshot_member_roles WHERE snapshot_id = ?'
+    ).all(row.id);
 
     return {
         id: row.id,
@@ -785,6 +1152,14 @@ function getLatestGuildSnapshot(guildId) {
         createdAt: row.created_at,
         name: row.name,
         icon: row.icon,
+        description: row.description,
+        banner: row.banner,
+        splash: row.splash,
+        discoverySplash: row.discovery_splash,
+        vanityURLCode: row.vanity_url_code,
+        nsfwLevel: row.nsfw_level,
+        mfaLevel: row.mfa_level,
+        ownerId: row.owner_id,
         verificationLevel: row.verification_level,
         defaultNotifications: row.default_notifications,
         explicitContentFilter: row.explicit_content_filter,
@@ -799,6 +1174,7 @@ function getLatestGuildSnapshot(guildId) {
         roleCount: row.role_count,
         emojiCount: row.emoji_count,
         checksum: row.checksum,
+        features: features.map(f => f.feature),
         channels: channels.map(ch => ({
             id: ch.channel_id,
             name: ch.name,
@@ -811,7 +1187,28 @@ function getLatestGuildSnapshot(guildId) {
             bitrate: ch.bitrate,
             userLimit: ch.user_limit,
             rtcRegion: ch.rtc_region,
-            defaultAutoArchiveDuration: ch.default_auto_archive_duration
+            defaultAutoArchiveDuration: ch.default_auto_archive_duration,
+            permissionsLocked: !!ch.permissions_locked,
+            flags: ch.flags,
+            defaultThreadRateLimitPerUser: ch.default_thread_rate_limit_per_user,
+            defaultReactionEmojiId: ch.default_reaction_emoji_id,
+            defaultReactionEmojiName: ch.default_reaction_emoji_name,
+            defaultSortOrder: ch.default_sort_order,
+            defaultForumLayout: ch.default_forum_layout,
+            videoQualityMode: ch.video_quality_mode,
+            archived: !!ch.archived,
+            autoArchiveDuration: ch.auto_archive_duration,
+            locked: !!ch.locked,
+            invitable: !!ch.invitable,
+            archiveTimestamp: ch.archive_timestamp
+        })),
+        channelTags: channelTags.map(t => ({
+            channelId: t.channel_id,
+            tagId: t.tag_id,
+            name: t.name,
+            moderated: !!t.moderated,
+            emojiId: t.emoji_id,
+            emojiName: t.emoji_name
         })),
         roles: roles.map(r => ({
             id: r.role_id,
@@ -821,12 +1218,21 @@ function getLatestGuildSnapshot(guildId) {
             permissions: r.permissions,
             mentionable: !!r.mentionable,
             hoist: !!r.hoist,
-            managed: !!r.managed
+            managed: !!r.managed,
+            icon: r.icon,
+            unicodeEmoji: r.unicode_emoji
+        })),
+        roleTags: roleTags.map(t => ({
+            roleId: t.role_id,
+            tag: t.tag,
+            value: t.value
         })),
         emojis: emojis.map(e => ({
             id: e.emoji_id,
             name: e.name,
-            animated: !!e.animated
+            animated: !!e.animated,
+            creatorId: e.creator_id,
+            createdAt: e.created_at
         })),
         overwrites: overwrites.map(o => ({
             channelId: o.channel_id,
@@ -840,12 +1246,19 @@ function getLatestGuildSnapshot(guildId) {
             name: s.name,
             description: s.description,
             tags: s.tags,
-            formatType: s.format_type
+            formatType: s.format_type,
+            type: s.type,
+            available: !!s.available,
+            sortValue: s.sort_value
         })),
         webhooks: webhooks.map(h => ({
             id: h.webhook_id,
             name: h.name,
-            channelId: h.channel_id
+            channelId: h.channel_id,
+            type: h.type,
+            avatar: h.avatar,
+            ownerId: h.owner_id,
+            applicationId: h.application_id
         })),
         invites: invites.map(i => ({
             code: i.code,
@@ -854,17 +1267,41 @@ function getLatestGuildSnapshot(guildId) {
             maxAge: i.max_age,
             temporary: !!i.temporary,
             uses: i.uses,
-            createdBy: i.created_by
+            createdBy: i.created_by,
+            createdAt: i.created_at,
+            expiresAt: i.expires_at,
+            targetType: i.target_type,
+            targetUserId: i.target_user_id,
+            targetApplicationId: i.target_application_id
         })),
         automod: automod.map(r => ({
             id: r.rule_id,
             name: r.name,
             enabled: !!r.enabled,
             eventType: r.event_type,
-            triggerType: r.trigger_type,
-            actions: r.actions,
-            exemptRoles: r.exempt_roles,
-            exemptChannels: r.exempt_channels
+            triggerType: r.trigger_type
+        })),
+        automodActions: automodActions.map(a => ({
+            ruleId: a.rule_id,
+            index: a.action_index,
+            type: a.action_type,
+            channelId: a.channel_id,
+            durationSeconds: a.duration_seconds,
+            customMessage: a.custom_message
+        })),
+        automodTriggerItems: automodTriggerItems.map(i => ({
+            ruleId: i.rule_id,
+            key: i.trigger_key,
+            index: i.item_index,
+            value: i.value
+        })),
+        automodExemptRoles: automodExemptRoles.map(r => ({
+            ruleId: r.rule_id,
+            roleId: r.role_id
+        })),
+        automodExemptChannels: automodExemptChannels.map(c => ({
+            ruleId: c.rule_id,
+            channelId: c.channel_id
         })),
         events: events.map(ev => ({
             id: ev.event_id,
@@ -875,7 +1312,10 @@ function getLatestGuildSnapshot(guildId) {
             entityType: ev.entity_type,
             status: ev.status,
             location: ev.location,
-            channelId: ev.channel_id
+            channelId: ev.channel_id,
+            privacyLevel: ev.privacy_level,
+            creatorId: ev.creator_id,
+            image: ev.image
         })),
         messages: messages.map(m => ({
             channelId: m.channel_id,
@@ -883,6 +1323,19 @@ function getLatestGuildSnapshot(guildId) {
             authorId: m.author_id,
             content: m.content,
             createdAt: m.created_at
+        })),
+        members: members.map(m => ({
+            userId: m.user_id,
+            nick: m.nick,
+            joinedAt: m.joined_at,
+            bot: !!m.bot,
+            pending: !!m.pending,
+            communicationDisabledUntil: m.communication_disabled_until,
+            avatar: m.avatar
+        })),
+        memberRoles: memberRoles.map(r => ({
+            userId: r.user_id,
+            roleId: r.role_id
         }))
     };
 }

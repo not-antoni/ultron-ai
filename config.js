@@ -50,6 +50,7 @@ module.exports = {
         trustedBotIds: parseList(process.env.SECURITY_TRUSTED_BOT_IDS),
         snapshotIntervalMs: parseInt(process.env.SECURITY_SNAPSHOT_INTERVAL_MS || '300000', 10),
         snapshotRetention: parseInt(process.env.SECURITY_SNAPSHOT_RETENTION || '3', 10),
+        snapshotIncludeMembers: parseBool(process.env.SECURITY_SNAPSHOT_INCLUDE_MEMBERS, true),
         alertCooldownMs: parseInt(process.env.SECURITY_ALERT_COOLDOWN_MS || '300000', 10),
         auditLogWindowMs: parseInt(process.env.SECURITY_AUDIT_LOG_WINDOW_MS || '45000', 10),
         eventWindowMs: parseInt(process.env.SECURITY_EVENT_WINDOW_MS || '60000', 10),

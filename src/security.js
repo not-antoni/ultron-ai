@@ -12,6 +12,7 @@ const securityCfg = config.security || {};
 
 const SNAPSHOT_INTERVAL_MS = securityCfg.snapshotIntervalMs ?? (5 * 60 * 1000);
 const SNAPSHOT_RETENTION = securityCfg.snapshotRetention ?? 10;
+const SNAPSHOT_INCLUDE_MEMBERS = securityCfg.snapshotIncludeMembers ?? true;
 const ALERT_COOLDOWN_MS = securityCfg.alertCooldownMs ?? (5 * 60 * 1000);
 const AUDIT_LOG_WINDOW_MS = securityCfg.auditLogWindowMs ?? 45000;
 
@@ -213,6 +214,14 @@ function computeChecksum(snapshot) {
     lines.push([
         'g',
         snapshot.name || '',
+        snapshot.description || '',
+        snapshot.banner || '',
+        snapshot.splash || '',
+        snapshot.discoverySplash || '',
+        snapshot.vanityURLCode || '',
+        snapshot.nsfwLevel || '',
+        snapshot.mfaLevel || '',
+        snapshot.ownerId || '',
         snapshot.verificationLevel || '',
         snapshot.defaultNotifications || '',
         snapshot.explicitContentFilter || '',
@@ -223,25 +232,57 @@ function computeChecksum(snapshot) {
         snapshot.afkChannelId || '',
         snapshot.afkTimeout ?? ''
     ].join('|'));
-    const channels = [...snapshot.channels].sort((a, b) => a.id.localeCompare(b.id));
-    const roles = [...snapshot.roles].sort((a, b) => a.id.localeCompare(b.id));
-    const emojis = [...snapshot.emojis].sort((a, b) => a.id.localeCompare(b.id));
+
+    const features = [...(snapshot.features || [])].sort();
+    for (const feat of features) {
+        lines.push(['f', feat].join('|'));
+    }
+
+    const channels = [...(snapshot.channels || [])].sort((a, b) => a.id.localeCompare(b.id));
+    const roles = [...(snapshot.roles || [])].sort((a, b) => a.id.localeCompare(b.id));
+    const emojis = [...(snapshot.emojis || [])].sort((a, b) => a.id.localeCompare(b.id));
 
     for (const ch of channels) {
         lines.push([
             'c', ch.id, ch.name, ch.type, ch.parentId || '',
             ch.position ?? '', ch.topic || '', ch.nsfw ? 1 : 0, ch.rateLimitPerUser ?? '',
-            ch.bitrate ?? '', ch.userLimit ?? '', ch.rtcRegion || '', ch.defaultAutoArchiveDuration ?? ''
+            ch.bitrate ?? '', ch.userLimit ?? '', ch.rtcRegion || '', ch.defaultAutoArchiveDuration ?? '',
+            ch.permissionsLocked ? 1 : 0, ch.flags || '', ch.defaultThreadRateLimitPerUser ?? '',
+            ch.defaultReactionEmojiId || '', ch.defaultReactionEmojiName || '',
+            ch.defaultSortOrder ?? '', ch.defaultForumLayout ?? '', ch.videoQualityMode ?? '',
+            ch.archived ? 1 : 0, ch.autoArchiveDuration ?? '', ch.locked ? 1 : 0,
+            ch.invitable ? 1 : 0, ch.archiveTimestamp || ''
         ].join('|'));
+    }
+    if (snapshot.channelTags) {
+        const tags = [...snapshot.channelTags].sort((a, b) => {
+            const keyA = `${a.channelId}:${a.tagId}`;
+            const keyB = `${b.channelId}:${b.tagId}`;
+            return keyA.localeCompare(keyB);
+        });
+        for (const tag of tags) {
+            lines.push(['ct', tag.channelId, tag.tagId, tag.name || '', tag.moderated ? 1 : 0, tag.emojiId || '', tag.emojiName || ''].join('|'));
+        }
     }
     for (const role of roles) {
         lines.push([
             'r', role.id, role.name, role.color ?? '', role.position ?? '',
-            role.permissions || '', role.mentionable ? 1 : 0, role.hoist ? 1 : 0, role.managed ? 1 : 0
+            role.permissions || '', role.mentionable ? 1 : 0, role.hoist ? 1 : 0, role.managed ? 1 : 0,
+            role.icon || '', role.unicodeEmoji || ''
         ].join('|'));
     }
+    if (snapshot.roleTags) {
+        const tags = [...snapshot.roleTags].sort((a, b) => {
+            const keyA = `${a.roleId}:${a.tag}:${a.value || ''}`;
+            const keyB = `${b.roleId}:${b.tag}:${b.value || ''}`;
+            return keyA.localeCompare(keyB);
+        });
+        for (const tag of tags) {
+            lines.push(['rt', tag.roleId, tag.tag || '', tag.value || ''].join('|'));
+        }
+    }
     for (const emoji of emojis) {
-        lines.push(['e', emoji.id, emoji.name, emoji.animated ? 1 : 0].join('|'));
+        lines.push(['e', emoji.id, emoji.name, emoji.animated ? 1 : 0, emoji.creatorId || '', emoji.createdAt || ''].join('|'));
     }
 
     if (snapshot.overwrites) {
@@ -261,35 +302,80 @@ function computeChecksum(snapshot) {
     if (snapshot.stickers) {
         const stickers = [...snapshot.stickers].sort((a, b) => a.id.localeCompare(b.id));
         for (const st of stickers) {
-            lines.push(['s', st.id, st.name || '', st.description || '', st.tags || '', st.formatType ?? ''].join('|'));
+            lines.push(['s', st.id, st.name || '', st.description || '', st.tags || '', st.formatType ?? '', st.type ?? '', st.available ? 1 : 0, st.sortValue ?? ''].join('|'));
         }
     }
 
     if (snapshot.webhooks) {
         const webhooks = [...snapshot.webhooks].sort((a, b) => a.id.localeCompare(b.id));
         for (const wh of webhooks) {
-            lines.push(['w', wh.id, wh.name || '', wh.channelId || ''].join('|'));
+            lines.push(['w', wh.id, wh.name || '', wh.channelId || '', wh.type ?? '', wh.avatar || '', wh.ownerId || '', wh.applicationId || ''].join('|'));
         }
     }
 
     if (snapshot.invites) {
         const invites = [...snapshot.invites].sort((a, b) => a.code.localeCompare(b.code));
         for (const inv of invites) {
-            lines.push(['i', inv.code, inv.channelId || '', inv.maxUses ?? '', inv.maxAge ?? '', inv.temporary ? 1 : 0, inv.uses ?? ''].join('|'));
+            lines.push(['i', inv.code, inv.channelId || '', inv.maxUses ?? '', inv.maxAge ?? '', inv.temporary ? 1 : 0, inv.uses ?? '', inv.createdAt || '', inv.expiresAt || '', inv.targetType || '', inv.targetUserId || '', inv.targetApplicationId || ''].join('|'));
         }
     }
 
     if (snapshot.automod) {
         const automod = [...snapshot.automod].sort((a, b) => a.id.localeCompare(b.id));
         for (const rule of automod) {
-            lines.push(['a', rule.id, rule.name || '', rule.enabled ? 1 : 0, rule.eventType || '', rule.triggerType || '', rule.actions || '', rule.exemptRoles || '', rule.exemptChannels || ''].join('|'));
+            lines.push(['a', rule.id, rule.name || '', rule.enabled ? 1 : 0, rule.eventType || '', rule.triggerType || ''].join('|'));
+        }
+    }
+    if (snapshot.automodActions) {
+        const actions = [...snapshot.automodActions].sort((a, b) => {
+            const keyA = `${a.ruleId}:${a.index ?? 0}`;
+            const keyB = `${b.ruleId}:${b.index ?? 0}`;
+            return keyA.localeCompare(keyB);
+        });
+        for (const act of actions) {
+            lines.push(['aa', act.ruleId, act.index ?? '', act.type || '', act.channelId || '', act.durationSeconds ?? '', act.customMessage || ''].join('|'));
+        }
+    }
+    if (snapshot.automodTriggerItems) {
+        const items = [...snapshot.automodTriggerItems].sort((a, b) => {
+            const keyA = `${a.ruleId}:${a.key}:${a.index ?? 0}:${a.value || ''}`;
+            const keyB = `${b.ruleId}:${b.key}:${b.index ?? 0}:${b.value || ''}`;
+            return keyA.localeCompare(keyB);
+        });
+        for (const item of items) {
+            lines.push(['at', item.ruleId, item.key || '', item.index ?? '', item.value || ''].join('|'));
+        }
+    }
+    if (snapshot.automodExemptRoles) {
+        const roles = [...snapshot.automodExemptRoles].sort((a, b) => `${a.ruleId}:${a.roleId}`.localeCompare(`${b.ruleId}:${b.roleId}`));
+        for (const entry of roles) {
+            lines.push(['ar', entry.ruleId, entry.roleId].join('|'));
+        }
+    }
+    if (snapshot.automodExemptChannels) {
+        const channels = [...snapshot.automodExemptChannels].sort((a, b) => `${a.ruleId}:${a.channelId}`.localeCompare(`${b.ruleId}:${b.channelId}`));
+        for (const entry of channels) {
+            lines.push(['ac', entry.ruleId, entry.channelId].join('|'));
         }
     }
 
     if (snapshot.events) {
         const events = [...snapshot.events].sort((a, b) => a.id.localeCompare(b.id));
         for (const ev of events) {
-            lines.push(['e2', ev.id, ev.name || '', ev.startTime || '', ev.endTime || '', ev.entityType || '', ev.status || '', ev.channelId || ''].join('|'));
+            lines.push(['e2', ev.id, ev.name || '', ev.startTime || '', ev.endTime || '', ev.entityType || '', ev.status || '', ev.channelId || '', ev.privacyLevel || '', ev.creatorId || '', ev.image || ''].join('|'));
+        }
+    }
+
+    if (snapshot.members) {
+        const members = [...snapshot.members].sort((a, b) => a.userId.localeCompare(b.userId));
+        for (const m of members) {
+            lines.push(['m', m.userId, m.nick || '', m.joinedAt || '', m.bot ? 1 : 0, m.pending ? 1 : 0, m.communicationDisabledUntil || '', m.avatar || ''].join('|'));
+        }
+    }
+    if (snapshot.memberRoles) {
+        const roles = [...snapshot.memberRoles].sort((a, b) => `${a.userId}:${a.roleId}`.localeCompare(`${b.userId}:${b.roleId}`));
+        for (const mr of roles) {
+            lines.push(['mr', mr.userId, mr.roleId].join('|'));
         }
     }
 
@@ -302,38 +388,104 @@ async function buildSnapshot(guild) {
         if (guild.roles.cache.size === 0) await guild.roles.fetch().catch(() => {});
         if (guild.emojis.cache.size === 0) await guild.emojis.fetch().catch(() => {});
         if (guild.stickers?.cache?.size === 0) await guild.stickers.fetch().catch(() => {});
+        if (SNAPSHOT_INCLUDE_MEMBERS) await guild.members.fetch().catch(() => {});
     } catch (_) {}
 
-    const channels = guild.channels.cache.map(ch => ({
-        id: ch.id,
-        name: ch.name,
-        type: ch.type,
-        parentId: ch.parentId || null,
-        position: ch.position ?? null,
-        topic: ch.topic || null,
-        nsfw: !!ch.nsfw,
-        rateLimitPerUser: ch.rateLimitPerUser ?? null,
-        bitrate: ch.bitrate ?? null,
-        userLimit: ch.userLimit ?? null,
-        rtcRegion: ch.rtcRegion || null,
-        defaultAutoArchiveDuration: ch.defaultAutoArchiveDuration ?? null
-    }));
+    let vanityURLCode = guild.vanityURLCode || null;
+    if (!vanityURLCode && guild.features?.includes?.('VANITY_URL') &&
+        guild.members.me?.permissions.has(PermissionFlagsBits.ManageGuild)) {
+        try {
+            const vanity = await guild.fetchVanityData();
+            vanityURLCode = vanity?.code || null;
+        } catch (_) {}
+    }
 
-    const roles = guild.roles.cache.map(role => ({
-        id: role.id,
-        name: role.name,
-        color: role.color ?? null,
-        position: role.position ?? null,
-        permissions: role.permissions?.bitfield?.toString?.() || null,
-        mentionable: !!role.mentionable,
-        hoist: !!role.hoist,
-        managed: !!role.managed
-    }));
+    const channelTags = [];
+    const channels = guild.channels.cache.map(ch => {
+        if (Array.isArray(ch.availableTags)) {
+            for (const tag of ch.availableTags) {
+                channelTags.push({
+                    channelId: ch.id,
+                    tagId: tag.id,
+                    name: tag.name || null,
+                    moderated: !!tag.moderated,
+                    emojiId: tag.emoji?.id || null,
+                    emojiName: tag.emoji?.name || null
+                });
+            }
+        }
+
+        const threadMeta = ch.threadMetadata || null;
+        const defaultReaction = ch.defaultReactionEmoji || null;
+
+        return {
+            id: ch.id,
+            name: ch.name,
+            type: ch.type,
+            parentId: ch.parentId || null,
+            position: ch.position ?? null,
+            topic: ch.topic || null,
+            nsfw: !!ch.nsfw,
+            rateLimitPerUser: ch.rateLimitPerUser ?? null,
+            bitrate: ch.bitrate ?? null,
+            userLimit: ch.userLimit ?? null,
+            rtcRegion: ch.rtcRegion || null,
+            defaultAutoArchiveDuration: ch.defaultAutoArchiveDuration ?? null,
+            permissionsLocked: ch.permissionsLocked ?? null,
+            flags: ch.flags?.bitfield?.toString?.() || null,
+            defaultThreadRateLimitPerUser: ch.defaultThreadRateLimitPerUser ?? null,
+            defaultReactionEmojiId: defaultReaction?.id || null,
+            defaultReactionEmojiName: defaultReaction?.name || null,
+            defaultSortOrder: ch.defaultSortOrder ?? null,
+            defaultForumLayout: ch.defaultForumLayout ?? null,
+            videoQualityMode: ch.videoQualityMode ?? null,
+            archived: threadMeta?.archived ?? null,
+            autoArchiveDuration: threadMeta?.autoArchiveDuration ?? null,
+            locked: threadMeta?.locked ?? null,
+            invitable: threadMeta?.invitable ?? null,
+            archiveTimestamp: threadMeta?.archiveTimestamp || null
+        };
+    });
+
+    const roleTags = [];
+    const roles = guild.roles.cache.map(role => {
+        const tags = role.tags;
+        if (tags) {
+            const entries = [
+                ['botId', tags.botId],
+                ['integrationId', tags.integrationId],
+                ['premiumSubscriberRole', tags.premiumSubscriberRole],
+                ['subscriptionListingId', tags.subscriptionListingId],
+                ['availableForPurchase', tags.availableForPurchase],
+                ['guildConnections', tags.guildConnections]
+            ];
+            for (const [tag, value] of entries) {
+                if (value !== null && value !== undefined) {
+                    roleTags.push({ roleId: role.id, tag, value: String(value) });
+                }
+            }
+        }
+
+        return {
+            id: role.id,
+            name: role.name,
+            color: role.color ?? null,
+            position: role.position ?? null,
+            permissions: role.permissions?.bitfield?.toString?.() || null,
+            mentionable: !!role.mentionable,
+            hoist: !!role.hoist,
+            managed: !!role.managed,
+            icon: role.icon || null,
+            unicodeEmoji: role.unicodeEmoji || null
+        };
+    });
 
     const emojis = guild.emojis.cache.map(emoji => ({
         id: emoji.id,
         name: emoji.name,
-        animated: !!emoji.animated
+        animated: !!emoji.animated,
+        creatorId: emoji.author?.id || null,
+        createdAt: emoji.createdTimestamp ? new Date(emoji.createdTimestamp).toISOString() : null
     }));
 
     const overwrites = [];
@@ -359,7 +511,10 @@ async function buildSnapshot(guild) {
                 name: sticker.name,
                 description: sticker.description || null,
                 tags: sticker.tags || null,
-                formatType: sticker.formatType
+                formatType: sticker.formatType,
+                type: sticker.type ?? null,
+                available: sticker.available ?? null,
+                sortValue: sticker.sortValue ?? null
             });
         }
     }
@@ -371,7 +526,11 @@ async function buildSnapshot(guild) {
             webhooks = hooks.map(h => ({
                 id: h.id,
                 name: h.name,
-                channelId: h.channelId || null
+                channelId: h.channelId || null,
+                type: h.type ?? null,
+                avatar: h.avatar || null,
+                ownerId: h.owner?.id || null,
+                applicationId: h.applicationId || null
             }));
         } catch (_) {}
     }
@@ -387,12 +546,21 @@ async function buildSnapshot(guild) {
                 maxAge: inv.maxAge ?? null,
                 temporary: !!inv.temporary,
                 uses: inv.uses ?? null,
-                createdBy: inv.inviter?.id || null
+                createdBy: inv.inviter?.id || null,
+                createdAt: inv.createdTimestamp ? new Date(inv.createdTimestamp).toISOString() : null,
+                expiresAt: inv.expiresTimestamp ? new Date(inv.expiresTimestamp).toISOString() : null,
+                targetType: inv.targetType ? String(inv.targetType) : null,
+                targetUserId: inv.targetUser?.id || null,
+                targetApplicationId: inv.targetApplication?.id || null
             }));
         } catch (_) {}
     }
 
     let automod = [];
+    let automodActions = [];
+    let automodTriggerItems = [];
+    let automodExemptRoles = [];
+    let automodExemptChannels = [];
     if (guild.members.me?.permissions.has(PermissionFlagsBits.ManageGuild)) {
         try {
             const rules = await guild.autoModerationRules.fetch();
@@ -401,11 +569,54 @@ async function buildSnapshot(guild) {
                 name: rule.name,
                 enabled: !!rule.enabled,
                 eventType: String(rule.eventType),
-                triggerType: String(rule.triggerType),
-                actions: JSON.stringify(rule.actions || []),
-                exemptRoles: JSON.stringify(rule.exemptRoles?.map(r => r.id) || []),
-                exemptChannels: JSON.stringify(rule.exemptChannels?.map(c => c.id) || [])
+                triggerType: String(rule.triggerType)
             }));
+
+            for (const [, rule] of rules) {
+                const triggerMeta = rule.triggerMetadata || {};
+                for (const [key, value] of Object.entries(triggerMeta)) {
+                    if (Array.isArray(value)) {
+                        value.forEach((item, idx) => {
+                            if (item === undefined || item === null) return;
+                            automodTriggerItems.push({
+                                ruleId: rule.id,
+                                key,
+                                index: idx,
+                                value: String(item)
+                            });
+                        });
+                    } else if (value !== undefined && value !== null) {
+                        automodTriggerItems.push({
+                            ruleId: rule.id,
+                            key,
+                            index: 0,
+                            value: String(value)
+                        });
+                    }
+                }
+
+                const actions = Array.isArray(rule.actions) ? rule.actions : [];
+                actions.forEach((action, idx) => {
+                    const meta = action.metadata || {};
+                    automodActions.push({
+                        ruleId: rule.id,
+                        index: idx,
+                        type: action.type ? String(action.type) : null,
+                        channelId: meta.channelId || null,
+                        durationSeconds: meta.durationSeconds ?? null,
+                        customMessage: meta.customMessage || null
+                    });
+                });
+
+                for (const role of rule.exemptRoles || []) {
+                    const roleId = role?.id || role;
+                    if (roleId) automodExemptRoles.push({ ruleId: rule.id, roleId });
+                }
+                for (const channel of rule.exemptChannels || []) {
+                    const channelId = channel?.id || channel;
+                    if (channelId) automodExemptChannels.push({ ruleId: rule.id, channelId });
+                }
+            }
         } catch (_) {}
     }
 
@@ -421,7 +632,10 @@ async function buildSnapshot(guild) {
             entityType: String(ev.entityType),
             status: String(ev.status),
             location: ev.entityMetadata?.location || null,
-            channelId: ev.channelId || null
+            channelId: ev.channelId || null,
+            privacyLevel: ev.privacyLevel ? String(ev.privacyLevel) : null,
+            creatorId: ev.creatorId || ev.creator?.id || null,
+            image: ev.image || null
         }));
     } catch (_) {}
 
@@ -455,11 +669,45 @@ async function buildSnapshot(guild) {
         } catch (_) {}
     }
 
+    const members = [];
+    const memberRoles = [];
+    if (SNAPSHOT_INCLUDE_MEMBERS) {
+        try {
+            for (const [, member] of guild.members.cache) {
+                members.push({
+                    userId: member.id,
+                    nick: member.nickname || null,
+                    joinedAt: member.joinedTimestamp ? new Date(member.joinedTimestamp).toISOString() : null,
+                    bot: !!member.user?.bot,
+                    pending: !!member.pending,
+                    communicationDisabledUntil: member.communicationDisabledUntilTimestamp
+                        ? new Date(member.communicationDisabledUntilTimestamp).toISOString()
+                        : null,
+                    avatar: member.avatar || null
+                });
+
+                for (const [, role] of member.roles.cache) {
+                    if (!role?.id) continue;
+                    if (role.id === guild.id) continue;
+                    memberRoles.push({ userId: member.id, roleId: role.id });
+                }
+            }
+        } catch (_) {}
+    }
+
     const snapshot = {
         guildId: guild.id,
         createdAt: new Date().toISOString(),
         name: guild.name,
         icon: guild.iconURL() || null,
+        description: guild.description || null,
+        banner: guild.banner || null,
+        splash: guild.splash || null,
+        discoverySplash: guild.discoverySplash || null,
+        vanityURLCode,
+        nsfwLevel: guild.nsfwLevel ? String(guild.nsfwLevel) : null,
+        mfaLevel: guild.mfaLevel ? String(guild.mfaLevel) : null,
+        ownerId: guild.ownerId || null,
         verificationLevel: String(guild.verificationLevel),
         defaultNotifications: String(guild.defaultMessageNotifications),
         explicitContentFilter: String(guild.explicitContentFilter),
@@ -473,16 +721,25 @@ async function buildSnapshot(guild) {
         channelCount: channels.length,
         roleCount: roles.length,
         emojiCount: emojis.length,
+        features: Array.isArray(guild.features) ? [...guild.features] : [],
         channels,
+        channelTags,
         roles,
+        roleTags,
         emojis,
         overwrites,
         stickers,
         webhooks,
         invites,
         automod,
+        automodActions,
+        automodTriggerItems,
+        automodExemptRoles,
+        automodExemptChannels,
         events,
-        messages
+        messages,
+        members,
+        memberRoles
     };
     snapshot.checksum = computeChecksum(snapshot);
     return snapshot;
