@@ -1,5 +1,5 @@
 const crypto = require('crypto');
-const { AuditLogEvent, PermissionFlagsBits } = require('discord.js');
+const { AuditLogEvent, PermissionFlagsBits, ChannelType, OverwriteType } = require('discord.js');
 const config = require('../config');
 const store = require('./store');
 const { createLogger } = require('./logger');
@@ -95,6 +95,98 @@ function isTrustedExecutor(guild, executorId) {
     return false;
 }
 
+function pickSnapshotMessages(snapshot, channelId, channelName, limit = 2) {
+    if (!snapshot?.messages) return [];
+    const candidates = snapshot.messages.filter(m => m.content);
+    const exact = candidates.filter(m => m.channelId === channelId);
+    if (exact.length > 0) {
+        return exact.slice(0, limit);
+    }
+    if (channelName && snapshot.channels) {
+        const match = snapshot.channels.find(ch => ch.name?.toLowerCase() === channelName.toLowerCase());
+        if (match) {
+            return candidates.filter(m => m.channelId === match.id).slice(0, limit);
+        }
+    }
+    return [];
+}
+
+async function ensureCriticalChannels(guild, reason, snapshot = null) {
+    const results = [];
+    const me = guild.members.me || guild.members.cache.get(guild.client.user.id);
+    if (!me || !me.permissions.has(PermissionFlagsBits.ManageChannels)) return results;
+
+    try {
+        if (guild.channels.cache.size === 0) await guild.channels.fetch().catch(() => {});
+    } catch (_) {}
+
+    const ensureChannel = async (name, type) => {
+        const existing = guild.channels.cache.find(ch =>
+            ch.type === type && ch.name?.toLowerCase() === name.toLowerCase()
+        );
+        if (existing) return existing;
+
+        try {
+            return await guild.channels.create({
+                name,
+                type,
+                reason: `Ultron security: ${reason}`
+            });
+        } catch (_) {
+            if (type !== ChannelType.GuildText) {
+                return await guild.channels.create({
+                    name,
+                    type: ChannelType.GuildText,
+                    reason: `Ultron security: ${reason}`
+                }).catch(() => null);
+            }
+            return null;
+        }
+    };
+
+    const latestSnapshot = snapshot || store.getLatestGuildSnapshot(guild.id);
+
+    if (securityCfg.restoreRulesChannel) {
+        const rulesName = securityCfg.rulesChannelName || 'rules';
+        const rulesChannel = await ensureChannel(rulesName, ChannelType.GuildText);
+        if (rulesChannel) {
+            const storedMessages = pickSnapshotMessages(latestSnapshot, rulesChannel.id, rulesName, 2);
+            if (storedMessages.length > 0) {
+                for (const msg of storedMessages) {
+                    await rulesChannel.send(msg.content).catch(() => {});
+                }
+            } else if (securityCfg.rulesMessage) {
+                await rulesChannel.send(securityCfg.rulesMessage).catch(() => {});
+            }
+            if (me.permissions.has(PermissionFlagsBits.ManageGuild)) {
+                await guild.setRulesChannel(rulesChannel).catch(() => {});
+            }
+            results.push(`Rules channel ensured: #${rulesChannel.name}`);
+        }
+    }
+
+    if (securityCfg.restoreAnnouncementsChannel) {
+        const annName = securityCfg.announcementsChannelName || 'announcements';
+        const annChannel = await ensureChannel(annName, ChannelType.GuildAnnouncement);
+        if (annChannel) {
+            const storedMessages = pickSnapshotMessages(latestSnapshot, annChannel.id, annName, 2);
+            if (storedMessages.length > 0) {
+                for (const msg of storedMessages) {
+                    await annChannel.send(msg.content).catch(() => {});
+                }
+            } else if (securityCfg.announcementsMessage) {
+                await annChannel.send(securityCfg.announcementsMessage).catch(() => {});
+            }
+            if (securityCfg.setSystemChannelToAnnouncements && me.permissions.has(PermissionFlagsBits.ManageGuild)) {
+                await guild.setSystemChannel(annChannel).catch(() => {});
+            }
+            results.push(`Announcements channel ensured: #${annChannel.name}`);
+        }
+    }
+
+    return results;
+}
+
 async function fetchLatestAuditEntry(guild, type) {
     try {
         const me = guild.members.me || guild.members.cache.get(guild.client.user.id);
@@ -118,6 +210,19 @@ async function fetchLatestAuditEntry(guild, type) {
 
 function computeChecksum(snapshot) {
     const lines = [];
+    lines.push([
+        'g',
+        snapshot.name || '',
+        snapshot.verificationLevel || '',
+        snapshot.defaultNotifications || '',
+        snapshot.explicitContentFilter || '',
+        snapshot.preferredLocale || '',
+        snapshot.premiumTier ?? '',
+        snapshot.systemChannelId || '',
+        snapshot.rulesChannelId || '',
+        snapshot.afkChannelId || '',
+        snapshot.afkTimeout ?? ''
+    ].join('|'));
     const channels = [...snapshot.channels].sort((a, b) => a.id.localeCompare(b.id));
     const roles = [...snapshot.roles].sort((a, b) => a.id.localeCompare(b.id));
     const emojis = [...snapshot.emojis].sort((a, b) => a.id.localeCompare(b.id));
@@ -125,8 +230,8 @@ function computeChecksum(snapshot) {
     for (const ch of channels) {
         lines.push([
             'c', ch.id, ch.name, ch.type, ch.parentId || '',
-            ch.position ?? '', ch.nsfw ? 1 : 0, ch.rateLimitPerUser ?? '',
-            ch.bitrate ?? '', ch.userLimit ?? ''
+            ch.position ?? '', ch.topic || '', ch.nsfw ? 1 : 0, ch.rateLimitPerUser ?? '',
+            ch.bitrate ?? '', ch.userLimit ?? '', ch.rtcRegion || '', ch.defaultAutoArchiveDuration ?? ''
         ].join('|'));
     }
     for (const role of roles) {
@@ -139,6 +244,55 @@ function computeChecksum(snapshot) {
         lines.push(['e', emoji.id, emoji.name, emoji.animated ? 1 : 0].join('|'));
     }
 
+    if (snapshot.overwrites) {
+        const overwrites = [...snapshot.overwrites].sort((a, b) => {
+            const keyA = `${a.channelId}:${a.targetId}`;
+            const keyB = `${b.channelId}:${b.targetId}`;
+            return keyA.localeCompare(keyB);
+        });
+        for (const ow of overwrites) {
+            lines.push([
+                'o', ow.channelId, ow.targetId, ow.targetType || '',
+                ow.allow || '', ow.deny || ''
+            ].join('|'));
+        }
+    }
+
+    if (snapshot.stickers) {
+        const stickers = [...snapshot.stickers].sort((a, b) => a.id.localeCompare(b.id));
+        for (const st of stickers) {
+            lines.push(['s', st.id, st.name || '', st.description || '', st.tags || '', st.formatType ?? ''].join('|'));
+        }
+    }
+
+    if (snapshot.webhooks) {
+        const webhooks = [...snapshot.webhooks].sort((a, b) => a.id.localeCompare(b.id));
+        for (const wh of webhooks) {
+            lines.push(['w', wh.id, wh.name || '', wh.channelId || ''].join('|'));
+        }
+    }
+
+    if (snapshot.invites) {
+        const invites = [...snapshot.invites].sort((a, b) => a.code.localeCompare(b.code));
+        for (const inv of invites) {
+            lines.push(['i', inv.code, inv.channelId || '', inv.maxUses ?? '', inv.maxAge ?? '', inv.temporary ? 1 : 0, inv.uses ?? ''].join('|'));
+        }
+    }
+
+    if (snapshot.automod) {
+        const automod = [...snapshot.automod].sort((a, b) => a.id.localeCompare(b.id));
+        for (const rule of automod) {
+            lines.push(['a', rule.id, rule.name || '', rule.enabled ? 1 : 0, rule.eventType || '', rule.triggerType || '', rule.actions || '', rule.exemptRoles || '', rule.exemptChannels || ''].join('|'));
+        }
+    }
+
+    if (snapshot.events) {
+        const events = [...snapshot.events].sort((a, b) => a.id.localeCompare(b.id));
+        for (const ev of events) {
+            lines.push(['e2', ev.id, ev.name || '', ev.startTime || '', ev.endTime || '', ev.entityType || '', ev.status || '', ev.channelId || ''].join('|'));
+        }
+    }
+
     return crypto.createHash('sha256').update(lines.join('\n')).digest('hex');
 }
 
@@ -147,6 +301,7 @@ async function buildSnapshot(guild) {
         if (guild.channels.cache.size === 0) await guild.channels.fetch().catch(() => {});
         if (guild.roles.cache.size === 0) await guild.roles.fetch().catch(() => {});
         if (guild.emojis.cache.size === 0) await guild.emojis.fetch().catch(() => {});
+        if (guild.stickers?.cache?.size === 0) await guild.stickers.fetch().catch(() => {});
     } catch (_) {}
 
     const channels = guild.channels.cache.map(ch => ({
@@ -155,10 +310,13 @@ async function buildSnapshot(guild) {
         type: ch.type,
         parentId: ch.parentId || null,
         position: ch.position ?? null,
+        topic: ch.topic || null,
         nsfw: !!ch.nsfw,
         rateLimitPerUser: ch.rateLimitPerUser ?? null,
         bitrate: ch.bitrate ?? null,
-        userLimit: ch.userLimit ?? null
+        userLimit: ch.userLimit ?? null,
+        rtcRegion: ch.rtcRegion || null,
+        defaultAutoArchiveDuration: ch.defaultAutoArchiveDuration ?? null
     }));
 
     const roles = guild.roles.cache.map(role => ({
@@ -178,16 +336,153 @@ async function buildSnapshot(guild) {
         animated: !!emoji.animated
     }));
 
+    const overwrites = [];
+    for (const [, channel] of guild.channels.cache) {
+        const perms = channel.permissionOverwrites?.cache;
+        if (!perms) continue;
+        for (const [, overwrite] of perms) {
+            overwrites.push({
+                channelId: channel.id,
+                targetId: overwrite.id,
+                targetType: overwrite.type === OverwriteType.Member ? 'member' : 'role',
+                allow: overwrite.allow?.bitfield?.toString?.() || null,
+                deny: overwrite.deny?.bitfield?.toString?.() || null
+            });
+        }
+    }
+
+    const stickers = [];
+    if (guild.stickers?.cache) {
+        for (const [, sticker] of guild.stickers.cache) {
+            stickers.push({
+                id: sticker.id,
+                name: sticker.name,
+                description: sticker.description || null,
+                tags: sticker.tags || null,
+                formatType: sticker.formatType
+            });
+        }
+    }
+
+    let webhooks = [];
+    if (guild.members.me?.permissions.has(PermissionFlagsBits.ManageWebhooks)) {
+        try {
+            const hooks = await guild.fetchWebhooks();
+            webhooks = hooks.map(h => ({
+                id: h.id,
+                name: h.name,
+                channelId: h.channelId || null
+            }));
+        } catch (_) {}
+    }
+
+    let invites = [];
+    if (guild.members.me?.permissions.has(PermissionFlagsBits.ManageGuild)) {
+        try {
+            const fetched = await guild.invites.fetch();
+            invites = fetched.map(inv => ({
+                code: inv.code,
+                channelId: inv.channel?.id || null,
+                maxUses: inv.maxUses ?? null,
+                maxAge: inv.maxAge ?? null,
+                temporary: !!inv.temporary,
+                uses: inv.uses ?? null,
+                createdBy: inv.inviter?.id || null
+            }));
+        } catch (_) {}
+    }
+
+    let automod = [];
+    if (guild.members.me?.permissions.has(PermissionFlagsBits.ManageGuild)) {
+        try {
+            const rules = await guild.autoModerationRules.fetch();
+            automod = rules.map(rule => ({
+                id: rule.id,
+                name: rule.name,
+                enabled: !!rule.enabled,
+                eventType: String(rule.eventType),
+                triggerType: String(rule.triggerType),
+                actions: JSON.stringify(rule.actions || []),
+                exemptRoles: JSON.stringify(rule.exemptRoles?.map(r => r.id) || []),
+                exemptChannels: JSON.stringify(rule.exemptChannels?.map(c => c.id) || [])
+            }));
+        } catch (_) {}
+    }
+
+    let events = [];
+    try {
+        const fetchedEvents = await guild.scheduledEvents.fetch();
+        events = fetchedEvents.map(ev => ({
+            id: ev.id,
+            name: ev.name,
+            description: ev.description || null,
+            startTime: ev.scheduledStartTimestamp ? new Date(ev.scheduledStartTimestamp).toISOString() : null,
+            endTime: ev.scheduledEndTimestamp ? new Date(ev.scheduledEndTimestamp).toISOString() : null,
+            entityType: String(ev.entityType),
+            status: String(ev.status),
+            location: ev.entityMetadata?.location || null,
+            channelId: ev.channelId || null
+        }));
+    } catch (_) {}
+
+    const messages = [];
+    const captureChannelIds = new Set();
+    if (guild.rulesChannelId) captureChannelIds.add(guild.rulesChannelId);
+    const annName = (securityCfg.announcementsChannelName || 'announcements').toLowerCase();
+    for (const [, channel] of guild.channels.cache) {
+        if (channel.name?.toLowerCase() === annName) captureChannelIds.add(channel.id);
+    }
+    if (guild.systemChannelId) captureChannelIds.add(guild.systemChannelId);
+
+    for (const channelId of captureChannelIds) {
+        const channel = guild.channels.cache.get(channelId);
+        if (!channel || !channel.isTextBased?.()) continue;
+        try {
+            const fetched = await channel.messages.fetch({ limit: 5 });
+            let added = 0;
+            for (const [, msg] of fetched) {
+                if (!msg.content) continue;
+                messages.push({
+                    channelId,
+                    messageId: msg.id,
+                    authorId: msg.author?.id || null,
+                    content: msg.content.slice(0, 2000),
+                    createdAt: msg.createdTimestamp ? new Date(msg.createdTimestamp).toISOString() : null
+                });
+                added += 1;
+                if (added >= 3) break;
+            }
+        } catch (_) {}
+    }
+
     const snapshot = {
         guildId: guild.id,
         createdAt: new Date().toISOString(),
+        name: guild.name,
+        icon: guild.iconURL() || null,
+        verificationLevel: String(guild.verificationLevel),
+        defaultNotifications: String(guild.defaultMessageNotifications),
+        explicitContentFilter: String(guild.explicitContentFilter),
+        preferredLocale: guild.preferredLocale || null,
+        premiumTier: guild.premiumTier ?? null,
+        systemChannelId: guild.systemChannelId || null,
+        rulesChannelId: guild.rulesChannelId || null,
+        afkChannelId: guild.afkChannelId || null,
+        afkTimeout: guild.afkTimeout ?? null,
         memberCount: guild.memberCount ?? null,
         channelCount: channels.length,
         roleCount: roles.length,
         emojiCount: emojis.length,
         channels,
         roles,
-        emojis
+        emojis,
+        overwrites,
+        stickers,
+        webhooks,
+        invites,
+        automod,
+        events,
+        messages
     };
     snapshot.checksum = computeChecksum(snapshot);
     return snapshot;
@@ -412,19 +707,10 @@ async function maybeAutoMitigateBotJoin(member, severity) {
 
 async function sendAlert(guild, payload) {
     const guildConfig = store.read(`guild-${guild.id}.json`, {});
-    const modLogId = guildConfig.modLogChannel || null;
-    const modLogChannel = modLogId ? guild.channels.cache.get(modLogId) : null;
-    const systemChannel = guild.systemChannel || null;
 
     const header = `**[Ultron Security Alert]**`;
     const body = `**Type:** ${payload.type}\n**Severity:** ${payload.severity}\n**Summary:** ${payload.summary}${payload.details ? `\n**Details:** ${payload.details}` : ''}\n**Time:** ${new Date().toISOString()}`;
     const content = `${header}\n${body}`;
-
-    if (modLogChannel) {
-        await modLogChannel.send(content).catch(() => {});
-    } else if (systemChannel) {
-        await systemChannel.send(content).catch(() => {});
-    }
 
     const recipients = new Map();
     const owner = await guild.fetchOwner().catch(() => null);
@@ -464,8 +750,14 @@ async function sendAlert(guild, payload) {
 
 async function raiseAlert(guild, payload) {
     if (!shouldAlert(guild.id, payload.type)) return;
+    let restoreNotes = '';
+    if (payload.type.startsWith('channel-')) {
+        const restored = await ensureCriticalChannels(guild, payload.type);
+        if (restored.length > 0) restoreNotes = ` ${restored.join(' | ')}`;
+    }
     store.logSecurityEvent(guild.id, payload.type, payload.severity, payload.summary, payload.details || null);
-    await sendAlert(guild, payload);
+    const details = payload.details ? `${payload.details}${restoreNotes}` : (restoreNotes.trim() || null);
+    await sendAlert(guild, { ...payload, details });
 }
 
 // ── Passive Snapshot Scan ──

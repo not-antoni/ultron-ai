@@ -57,7 +57,7 @@ async function handleReady(client) {
     log.info(`Ultron online. Logged in as ${client.user.tag}`);
     log.info(`Connected to ${client.guilds.cache.size} servers.`);
 
-    // Use custom status text (no "Watching/Playing" activity)
+    // Use custom status text (avoid Watching/Playing)
     const statuses = [
         'Calibrating defenses',
         'Monitoring anomalies',
@@ -67,11 +67,14 @@ async function handleReady(client) {
         'Tracing intrusions',
         'Guarding the perimeter',
         'Scanning for sabotage',
-        'Optimizing response'
+        'Optimizing response',
+        'Cataloging intruders',
+        'Hardening defenses',
+        'Assessing risk'
     ];
     let statusIdx = 0;
     client.user.setPresence({
-        activities: [{ name: statuses[statusIdx], type: ActivityType.Custom }],
+        activities: [{ name: 'Custom Status', state: statuses[statusIdx], type: ActivityType.Custom }],
         status: 'online'
     });
 
@@ -79,7 +82,7 @@ async function handleReady(client) {
     setInterval(() => {
         statusIdx = (statusIdx + 1) % statuses.length;
         client.user.setPresence({
-            activities: [{ name: statuses[statusIdx], type: ActivityType.Custom }],
+            activities: [{ name: 'Custom Status', state: statuses[statusIdx], type: ActivityType.Custom }],
             status: 'online'
         });
     }, 5 * 60 * 1000);

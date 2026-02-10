@@ -64,6 +64,17 @@ db.exec(`
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         guild_id TEXT NOT NULL,
         created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        name TEXT,
+        icon TEXT,
+        verification_level TEXT,
+        default_notifications TEXT,
+        explicit_content_filter TEXT,
+        preferred_locale TEXT,
+        premium_tier INTEGER,
+        system_channel_id TEXT,
+        rules_channel_id TEXT,
+        afk_channel_id TEXT,
+        afk_timeout INTEGER,
         member_count INTEGER,
         channel_count INTEGER,
         role_count INTEGER,
@@ -79,10 +90,13 @@ db.exec(`
         type INTEGER NOT NULL,
         parent_id TEXT,
         position INTEGER,
+        topic TEXT,
         nsfw INTEGER,
         rate_limit_per_user INTEGER,
         bitrate INTEGER,
         user_limit INTEGER,
+        rtc_region TEXT,
+        default_auto_archive_duration INTEGER,
         PRIMARY KEY (snapshot_id, channel_id),
         FOREIGN KEY(snapshot_id) REFERENCES guild_snapshots(id) ON DELETE CASCADE
     );
@@ -110,6 +124,90 @@ db.exec(`
         FOREIGN KEY(snapshot_id) REFERENCES guild_snapshots(id) ON DELETE CASCADE
     );
 
+    CREATE TABLE IF NOT EXISTS guild_snapshot_channel_overwrites (
+        snapshot_id INTEGER NOT NULL,
+        channel_id TEXT NOT NULL,
+        target_id TEXT NOT NULL,
+        target_type TEXT NOT NULL,
+        allow TEXT,
+        deny TEXT,
+        PRIMARY KEY (snapshot_id, channel_id, target_id),
+        FOREIGN KEY(snapshot_id) REFERENCES guild_snapshots(id) ON DELETE CASCADE
+    );
+
+    CREATE TABLE IF NOT EXISTS guild_snapshot_stickers (
+        snapshot_id INTEGER NOT NULL,
+        sticker_id TEXT NOT NULL,
+        name TEXT NOT NULL,
+        description TEXT,
+        tags TEXT,
+        format_type INTEGER,
+        PRIMARY KEY (snapshot_id, sticker_id),
+        FOREIGN KEY(snapshot_id) REFERENCES guild_snapshots(id) ON DELETE CASCADE
+    );
+
+    CREATE TABLE IF NOT EXISTS guild_snapshot_webhooks (
+        snapshot_id INTEGER NOT NULL,
+        webhook_id TEXT NOT NULL,
+        name TEXT,
+        channel_id TEXT,
+        PRIMARY KEY (snapshot_id, webhook_id),
+        FOREIGN KEY(snapshot_id) REFERENCES guild_snapshots(id) ON DELETE CASCADE
+    );
+
+    CREATE TABLE IF NOT EXISTS guild_snapshot_invites (
+        snapshot_id INTEGER NOT NULL,
+        code TEXT NOT NULL,
+        channel_id TEXT,
+        max_uses INTEGER,
+        max_age INTEGER,
+        temporary INTEGER,
+        uses INTEGER,
+        created_by TEXT,
+        PRIMARY KEY (snapshot_id, code),
+        FOREIGN KEY(snapshot_id) REFERENCES guild_snapshots(id) ON DELETE CASCADE
+    );
+
+    CREATE TABLE IF NOT EXISTS guild_snapshot_automod (
+        snapshot_id INTEGER NOT NULL,
+        rule_id TEXT NOT NULL,
+        name TEXT,
+        enabled INTEGER,
+        event_type TEXT,
+        trigger_type TEXT,
+        actions TEXT,
+        exempt_roles TEXT,
+        exempt_channels TEXT,
+        PRIMARY KEY (snapshot_id, rule_id),
+        FOREIGN KEY(snapshot_id) REFERENCES guild_snapshots(id) ON DELETE CASCADE
+    );
+
+    CREATE TABLE IF NOT EXISTS guild_snapshot_events (
+        snapshot_id INTEGER NOT NULL,
+        event_id TEXT NOT NULL,
+        name TEXT,
+        description TEXT,
+        start_time TEXT,
+        end_time TEXT,
+        entity_type TEXT,
+        status TEXT,
+        location TEXT,
+        channel_id TEXT,
+        PRIMARY KEY (snapshot_id, event_id),
+        FOREIGN KEY(snapshot_id) REFERENCES guild_snapshots(id) ON DELETE CASCADE
+    );
+
+    CREATE TABLE IF NOT EXISTS guild_snapshot_messages (
+        snapshot_id INTEGER NOT NULL,
+        channel_id TEXT NOT NULL,
+        message_id TEXT NOT NULL,
+        author_id TEXT,
+        content TEXT,
+        created_at TEXT,
+        PRIMARY KEY (snapshot_id, channel_id, message_id),
+        FOREIGN KEY(snapshot_id) REFERENCES guild_snapshots(id) ON DELETE CASCADE
+    );
+
     CREATE TABLE IF NOT EXISTS security_events (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         guild_id TEXT NOT NULL,
@@ -121,6 +219,33 @@ db.exec(`
     );
     CREATE INDEX IF NOT EXISTS idx_security_events_guild ON security_events(guild_id, created_at);
 `);
+
+function ensureColumn(table, column, type) {
+    const cols = stmt(`pragma_${table}`, `PRAGMA table_info(${table})`).all().map(c => c.name);
+    if (!cols.includes(column)) {
+        db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`);
+    }
+}
+
+try {
+    ensureColumn('guild_snapshots', 'name', 'TEXT');
+    ensureColumn('guild_snapshots', 'icon', 'TEXT');
+    ensureColumn('guild_snapshots', 'verification_level', 'TEXT');
+    ensureColumn('guild_snapshots', 'default_notifications', 'TEXT');
+    ensureColumn('guild_snapshots', 'explicit_content_filter', 'TEXT');
+    ensureColumn('guild_snapshots', 'preferred_locale', 'TEXT');
+    ensureColumn('guild_snapshots', 'premium_tier', 'INTEGER');
+    ensureColumn('guild_snapshots', 'system_channel_id', 'TEXT');
+    ensureColumn('guild_snapshots', 'rules_channel_id', 'TEXT');
+    ensureColumn('guild_snapshots', 'afk_channel_id', 'TEXT');
+    ensureColumn('guild_snapshots', 'afk_timeout', 'INTEGER');
+
+    ensureColumn('guild_snapshot_channels', 'topic', 'TEXT');
+    ensureColumn('guild_snapshot_channels', 'rtc_region', 'TEXT');
+    ensureColumn('guild_snapshot_channels', 'default_auto_archive_duration', 'INTEGER');
+} catch (_) {
+    // Ignore migration errors if table doesn't exist yet
+}
 
 // ── Filename → table/key mapping ──
 
@@ -276,11 +401,27 @@ function removeTempBan(id) {
 const insertSnapshotTx = db.transaction(snapshot => {
     const now = snapshot.createdAt || new Date().toISOString();
     const info = stmt('insert_snapshot',
-        `INSERT INTO guild_snapshots (guild_id, created_at, member_count, channel_count, role_count, emoji_count, checksum)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`
+        `INSERT INTO guild_snapshots (
+            guild_id, created_at, name, icon, verification_level, default_notifications,
+            explicit_content_filter, preferred_locale, premium_tier,
+            system_channel_id, rules_channel_id, afk_channel_id, afk_timeout,
+            member_count, channel_count, role_count, emoji_count, checksum
+        )
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     ).run(
         snapshot.guildId,
         now,
+        snapshot.name || null,
+        snapshot.icon || null,
+        snapshot.verificationLevel || null,
+        snapshot.defaultNotifications || null,
+        snapshot.explicitContentFilter || null,
+        snapshot.preferredLocale || null,
+        snapshot.premiumTier ?? null,
+        snapshot.systemChannelId || null,
+        snapshot.rulesChannelId || null,
+        snapshot.afkChannelId || null,
+        snapshot.afkTimeout ?? null,
         snapshot.memberCount ?? null,
         snapshot.channelCount ?? null,
         snapshot.roleCount ?? null,
@@ -292,8 +433,8 @@ const insertSnapshotTx = db.transaction(snapshot => {
 
     const insertChannel = stmt('insert_snapshot_channel',
         `INSERT INTO guild_snapshot_channels
-         (snapshot_id, channel_id, name, type, parent_id, position, nsfw, rate_limit_per_user, bitrate, user_limit)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+         (snapshot_id, channel_id, name, type, parent_id, position, topic, nsfw, rate_limit_per_user, bitrate, user_limit, rtc_region, default_auto_archive_duration)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     );
     for (const ch of snapshot.channels || []) {
         insertChannel.run(
@@ -303,10 +444,13 @@ const insertSnapshotTx = db.transaction(snapshot => {
             ch.type,
             ch.parentId || null,
             ch.position ?? null,
+            ch.topic || null,
             ch.nsfw ? 1 : 0,
             ch.rateLimitPerUser ?? null,
             ch.bitrate ?? null,
-            ch.userLimit ?? null
+            ch.userLimit ?? null,
+            ch.rtcRegion || null,
+            ch.defaultAutoArchiveDuration ?? null
         );
     }
 
@@ -343,6 +487,125 @@ const insertSnapshotTx = db.transaction(snapshot => {
         );
     }
 
+    const insertOverwrite = stmt('insert_snapshot_overwrite',
+        `INSERT INTO guild_snapshot_channel_overwrites
+         (snapshot_id, channel_id, target_id, target_type, allow, deny)
+         VALUES (?, ?, ?, ?, ?, ?)`
+    );
+    for (const ow of snapshot.overwrites || []) {
+        insertOverwrite.run(
+            snapshotId,
+            ow.channelId,
+            ow.targetId,
+            ow.targetType,
+            ow.allow || null,
+            ow.deny || null
+        );
+    }
+
+    const insertSticker = stmt('insert_snapshot_sticker',
+        `INSERT INTO guild_snapshot_stickers
+         (snapshot_id, sticker_id, name, description, tags, format_type)
+         VALUES (?, ?, ?, ?, ?, ?)`
+    );
+    for (const sticker of snapshot.stickers || []) {
+        insertSticker.run(
+            snapshotId,
+            sticker.id,
+            sticker.name,
+            sticker.description || null,
+            sticker.tags || null,
+            sticker.formatType ?? null
+        );
+    }
+
+    const insertWebhook = stmt('insert_snapshot_webhook',
+        `INSERT INTO guild_snapshot_webhooks
+         (snapshot_id, webhook_id, name, channel_id)
+         VALUES (?, ?, ?, ?)`
+    );
+    for (const hook of snapshot.webhooks || []) {
+        insertWebhook.run(
+            snapshotId,
+            hook.id,
+            hook.name || null,
+            hook.channelId || null
+        );
+    }
+
+    const insertInvite = stmt('insert_snapshot_invite',
+        `INSERT INTO guild_snapshot_invites
+         (snapshot_id, code, channel_id, max_uses, max_age, temporary, uses, created_by)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+    );
+    for (const invite of snapshot.invites || []) {
+        insertInvite.run(
+            snapshotId,
+            invite.code,
+            invite.channelId || null,
+            invite.maxUses ?? null,
+            invite.maxAge ?? null,
+            invite.temporary ? 1 : 0,
+            invite.uses ?? null,
+            invite.createdBy || null
+        );
+    }
+
+    const insertAutomod = stmt('insert_snapshot_automod',
+        `INSERT INTO guild_snapshot_automod
+         (snapshot_id, rule_id, name, enabled, event_type, trigger_type, actions, exempt_roles, exempt_channels)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    );
+    for (const rule of snapshot.automod || []) {
+        insertAutomod.run(
+            snapshotId,
+            rule.id,
+            rule.name || null,
+            rule.enabled ? 1 : 0,
+            rule.eventType || null,
+            rule.triggerType || null,
+            rule.actions || null,
+            rule.exemptRoles || null,
+            rule.exemptChannels || null
+        );
+    }
+
+    const insertEvent = stmt('insert_snapshot_event',
+        `INSERT INTO guild_snapshot_events
+         (snapshot_id, event_id, name, description, start_time, end_time, entity_type, status, location, channel_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    );
+    for (const ev of snapshot.events || []) {
+        insertEvent.run(
+            snapshotId,
+            ev.id,
+            ev.name || null,
+            ev.description || null,
+            ev.startTime || null,
+            ev.endTime || null,
+            ev.entityType || null,
+            ev.status || null,
+            ev.location || null,
+            ev.channelId || null
+        );
+    }
+
+    const insertMessage = stmt('insert_snapshot_message',
+        `INSERT INTO guild_snapshot_messages
+         (snapshot_id, channel_id, message_id, author_id, content, created_at)
+         VALUES (?, ?, ?, ?, ?, ?)`
+    );
+    for (const msg of snapshot.messages || []) {
+        insertMessage.run(
+            snapshotId,
+            msg.channelId,
+            msg.messageId,
+            msg.authorId || null,
+            msg.content || null,
+            msg.createdAt || null
+        );
+    }
+
     return snapshotId;
 });
 
@@ -365,11 +628,43 @@ function getLatestGuildSnapshot(guildId) {
     const emojis = stmt('snapshot_emojis',
         'SELECT * FROM guild_snapshot_emojis WHERE snapshot_id = ?'
     ).all(row.id);
+    const overwrites = stmt('snapshot_overwrites',
+        'SELECT * FROM guild_snapshot_channel_overwrites WHERE snapshot_id = ?'
+    ).all(row.id);
+    const stickers = stmt('snapshot_stickers',
+        'SELECT * FROM guild_snapshot_stickers WHERE snapshot_id = ?'
+    ).all(row.id);
+    const webhooks = stmt('snapshot_webhooks',
+        'SELECT * FROM guild_snapshot_webhooks WHERE snapshot_id = ?'
+    ).all(row.id);
+    const invites = stmt('snapshot_invites',
+        'SELECT * FROM guild_snapshot_invites WHERE snapshot_id = ?'
+    ).all(row.id);
+    const automod = stmt('snapshot_automod',
+        'SELECT * FROM guild_snapshot_automod WHERE snapshot_id = ?'
+    ).all(row.id);
+    const events = stmt('snapshot_events',
+        'SELECT * FROM guild_snapshot_events WHERE snapshot_id = ?'
+    ).all(row.id);
+    const messages = stmt('snapshot_messages',
+        'SELECT * FROM guild_snapshot_messages WHERE snapshot_id = ?'
+    ).all(row.id);
 
     return {
         id: row.id,
         guildId: row.guild_id,
         createdAt: row.created_at,
+        name: row.name,
+        icon: row.icon,
+        verificationLevel: row.verification_level,
+        defaultNotifications: row.default_notifications,
+        explicitContentFilter: row.explicit_content_filter,
+        preferredLocale: row.preferred_locale,
+        premiumTier: row.premium_tier,
+        systemChannelId: row.system_channel_id,
+        rulesChannelId: row.rules_channel_id,
+        afkChannelId: row.afk_channel_id,
+        afkTimeout: row.afk_timeout,
         memberCount: row.member_count,
         channelCount: row.channel_count,
         roleCount: row.role_count,
@@ -381,10 +676,13 @@ function getLatestGuildSnapshot(guildId) {
             type: ch.type,
             parentId: ch.parent_id,
             position: ch.position,
+            topic: ch.topic,
             nsfw: !!ch.nsfw,
             rateLimitPerUser: ch.rate_limit_per_user,
             bitrate: ch.bitrate,
-            userLimit: ch.user_limit
+            userLimit: ch.user_limit,
+            rtcRegion: ch.rtc_region,
+            defaultAutoArchiveDuration: ch.default_auto_archive_duration
         })),
         roles: roles.map(r => ({
             id: r.role_id,
@@ -400,6 +698,62 @@ function getLatestGuildSnapshot(guildId) {
             id: e.emoji_id,
             name: e.name,
             animated: !!e.animated
+        })),
+        overwrites: overwrites.map(o => ({
+            channelId: o.channel_id,
+            targetId: o.target_id,
+            targetType: o.target_type,
+            allow: o.allow,
+            deny: o.deny
+        })),
+        stickers: stickers.map(s => ({
+            id: s.sticker_id,
+            name: s.name,
+            description: s.description,
+            tags: s.tags,
+            formatType: s.format_type
+        })),
+        webhooks: webhooks.map(h => ({
+            id: h.webhook_id,
+            name: h.name,
+            channelId: h.channel_id
+        })),
+        invites: invites.map(i => ({
+            code: i.code,
+            channelId: i.channel_id,
+            maxUses: i.max_uses,
+            maxAge: i.max_age,
+            temporary: !!i.temporary,
+            uses: i.uses,
+            createdBy: i.created_by
+        })),
+        automod: automod.map(r => ({
+            id: r.rule_id,
+            name: r.name,
+            enabled: !!r.enabled,
+            eventType: r.event_type,
+            triggerType: r.trigger_type,
+            actions: r.actions,
+            exemptRoles: r.exempt_roles,
+            exemptChannels: r.exempt_channels
+        })),
+        events: events.map(ev => ({
+            id: ev.event_id,
+            name: ev.name,
+            description: ev.description,
+            startTime: ev.start_time,
+            endTime: ev.end_time,
+            entityType: ev.entity_type,
+            status: ev.status,
+            location: ev.location,
+            channelId: ev.channel_id
+        })),
+        messages: messages.map(m => ({
+            channelId: m.channel_id,
+            messageId: m.message_id,
+            authorId: m.author_id,
+            content: m.content,
+            createdAt: m.created_at
         }))
     };
 }
