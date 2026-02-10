@@ -221,28 +221,100 @@ db.exec(`
 `);
 
 function ensureColumn(table, column, type) {
-    const cols = stmt(`pragma_${table}`, `PRAGMA table_info(${table})`).all().map(c => c.name);
+    const tableRow = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?").get(table);
+    if (!tableRow) return;
+    const cols = db.prepare(`PRAGMA table_info(${table})`).all().map(c => c.name);
     if (!cols.includes(column)) {
         db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`);
     }
 }
 
 try {
-    ensureColumn('guild_snapshots', 'name', 'TEXT');
-    ensureColumn('guild_snapshots', 'icon', 'TEXT');
-    ensureColumn('guild_snapshots', 'verification_level', 'TEXT');
-    ensureColumn('guild_snapshots', 'default_notifications', 'TEXT');
-    ensureColumn('guild_snapshots', 'explicit_content_filter', 'TEXT');
-    ensureColumn('guild_snapshots', 'preferred_locale', 'TEXT');
-    ensureColumn('guild_snapshots', 'premium_tier', 'INTEGER');
-    ensureColumn('guild_snapshots', 'system_channel_id', 'TEXT');
-    ensureColumn('guild_snapshots', 'rules_channel_id', 'TEXT');
-    ensureColumn('guild_snapshots', 'afk_channel_id', 'TEXT');
-    ensureColumn('guild_snapshots', 'afk_timeout', 'INTEGER');
+    const migrations = [
+        ['guild_snapshots', 'name', 'TEXT'],
+        ['guild_snapshots', 'icon', 'TEXT'],
+        ['guild_snapshots', 'verification_level', 'TEXT'],
+        ['guild_snapshots', 'default_notifications', 'TEXT'],
+        ['guild_snapshots', 'explicit_content_filter', 'TEXT'],
+        ['guild_snapshots', 'preferred_locale', 'TEXT'],
+        ['guild_snapshots', 'premium_tier', 'INTEGER'],
+        ['guild_snapshots', 'system_channel_id', 'TEXT'],
+        ['guild_snapshots', 'rules_channel_id', 'TEXT'],
+        ['guild_snapshots', 'afk_channel_id', 'TEXT'],
+        ['guild_snapshots', 'afk_timeout', 'INTEGER'],
+        ['guild_snapshots', 'member_count', 'INTEGER'],
+        ['guild_snapshots', 'channel_count', 'INTEGER'],
+        ['guild_snapshots', 'role_count', 'INTEGER'],
+        ['guild_snapshots', 'emoji_count', 'INTEGER'],
+        ['guild_snapshots', 'checksum', 'TEXT'],
 
-    ensureColumn('guild_snapshot_channels', 'topic', 'TEXT');
-    ensureColumn('guild_snapshot_channels', 'rtc_region', 'TEXT');
-    ensureColumn('guild_snapshot_channels', 'default_auto_archive_duration', 'INTEGER');
+        ['guild_snapshot_channels', 'name', 'TEXT'],
+        ['guild_snapshot_channels', 'type', 'INTEGER'],
+        ['guild_snapshot_channels', 'parent_id', 'TEXT'],
+        ['guild_snapshot_channels', 'position', 'INTEGER'],
+        ['guild_snapshot_channels', 'topic', 'TEXT'],
+        ['guild_snapshot_channels', 'nsfw', 'INTEGER'],
+        ['guild_snapshot_channels', 'rate_limit_per_user', 'INTEGER'],
+        ['guild_snapshot_channels', 'bitrate', 'INTEGER'],
+        ['guild_snapshot_channels', 'user_limit', 'INTEGER'],
+        ['guild_snapshot_channels', 'rtc_region', 'TEXT'],
+        ['guild_snapshot_channels', 'default_auto_archive_duration', 'INTEGER'],
+
+        ['guild_snapshot_roles', 'name', 'TEXT'],
+        ['guild_snapshot_roles', 'color', 'INTEGER'],
+        ['guild_snapshot_roles', 'position', 'INTEGER'],
+        ['guild_snapshot_roles', 'permissions', 'TEXT'],
+        ['guild_snapshot_roles', 'mentionable', 'INTEGER'],
+        ['guild_snapshot_roles', 'hoist', 'INTEGER'],
+        ['guild_snapshot_roles', 'managed', 'INTEGER'],
+
+        ['guild_snapshot_emojis', 'name', 'TEXT'],
+        ['guild_snapshot_emojis', 'animated', 'INTEGER'],
+
+        ['guild_snapshot_channel_overwrites', 'target_type', 'TEXT'],
+        ['guild_snapshot_channel_overwrites', 'allow', 'TEXT'],
+        ['guild_snapshot_channel_overwrites', 'deny', 'TEXT'],
+
+        ['guild_snapshot_stickers', 'name', 'TEXT'],
+        ['guild_snapshot_stickers', 'description', 'TEXT'],
+        ['guild_snapshot_stickers', 'tags', 'TEXT'],
+        ['guild_snapshot_stickers', 'format_type', 'INTEGER'],
+
+        ['guild_snapshot_webhooks', 'name', 'TEXT'],
+        ['guild_snapshot_webhooks', 'channel_id', 'TEXT'],
+
+        ['guild_snapshot_invites', 'channel_id', 'TEXT'],
+        ['guild_snapshot_invites', 'max_uses', 'INTEGER'],
+        ['guild_snapshot_invites', 'max_age', 'INTEGER'],
+        ['guild_snapshot_invites', 'temporary', 'INTEGER'],
+        ['guild_snapshot_invites', 'uses', 'INTEGER'],
+        ['guild_snapshot_invites', 'created_by', 'TEXT'],
+
+        ['guild_snapshot_automod', 'name', 'TEXT'],
+        ['guild_snapshot_automod', 'enabled', 'INTEGER'],
+        ['guild_snapshot_automod', 'event_type', 'TEXT'],
+        ['guild_snapshot_automod', 'trigger_type', 'TEXT'],
+        ['guild_snapshot_automod', 'actions', 'TEXT'],
+        ['guild_snapshot_automod', 'exempt_roles', 'TEXT'],
+        ['guild_snapshot_automod', 'exempt_channels', 'TEXT'],
+
+        ['guild_snapshot_events', 'name', 'TEXT'],
+        ['guild_snapshot_events', 'description', 'TEXT'],
+        ['guild_snapshot_events', 'start_time', 'TEXT'],
+        ['guild_snapshot_events', 'end_time', 'TEXT'],
+        ['guild_snapshot_events', 'entity_type', 'TEXT'],
+        ['guild_snapshot_events', 'status', 'TEXT'],
+        ['guild_snapshot_events', 'location', 'TEXT'],
+        ['guild_snapshot_events', 'channel_id', 'TEXT'],
+
+        ['guild_snapshot_messages', 'author_id', 'TEXT'],
+        ['guild_snapshot_messages', 'content', 'TEXT'],
+        ['guild_snapshot_messages', 'created_at', 'TEXT']
+    ];
+
+    for (const [table, column, type] of migrations) {
+        ensureColumn(table, column, type);
+    }
 } catch (_) {
     // Ignore migration errors if table doesn't exist yet
 }
