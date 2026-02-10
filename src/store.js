@@ -742,7 +742,7 @@ const insertSnapshotTx = db.transaction(snapshot => {
          (snapshot_id, channel_id, name, type, parent_id, position, topic, nsfw, rate_limit_per_user, bitrate, user_limit, rtc_region, default_auto_archive_duration,
           permissions_locked, flags, default_thread_rate_limit_per_user, default_reaction_emoji_id, default_reaction_emoji_name,
           default_sort_order, default_forum_layout, video_quality_mode, archived, auto_archive_duration, locked, invitable, archive_timestamp)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     );
     for (const ch of snapshot.channels || []) {
         insertChannel.run(
