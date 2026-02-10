@@ -154,6 +154,7 @@ db.exec(`
         animated INTEGER,
         creator_id TEXT,
         created_at TEXT,
+        image_url TEXT,
         image_type TEXT,
         image_data BLOB,
         PRIMARY KEY (snapshot_id, emoji_id),
@@ -433,6 +434,7 @@ try {
         ['guild_snapshot_emojis', 'animated', 'INTEGER'],
         ['guild_snapshot_emojis', 'creator_id', 'TEXT'],
         ['guild_snapshot_emojis', 'created_at', 'TEXT'],
+        ['guild_snapshot_emojis', 'image_url', 'TEXT'],
         ['guild_snapshot_emojis', 'image_type', 'TEXT'],
         ['guild_snapshot_emojis', 'image_data', 'BLOB'],
 
@@ -811,8 +813,8 @@ const insertSnapshotTx = db.transaction(snapshot => {
 
     const insertEmoji = stmt('insert_snapshot_emoji',
         `INSERT INTO guild_snapshot_emojis
-         (snapshot_id, emoji_id, name, animated, creator_id, created_at, image_type, image_data)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+         (snapshot_id, emoji_id, name, animated, creator_id, created_at, image_url, image_type, image_data)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
     );
     for (const emoji of snapshot.emojis || []) {
         insertEmoji.run(
@@ -822,6 +824,7 @@ const insertSnapshotTx = db.transaction(snapshot => {
             emoji.animated ? 1 : 0,
             emoji.creatorId || null,
             emoji.createdAt || null,
+            emoji.imageUrl || null,
             emoji.imageType || null,
             emoji.imageData || null
         );
@@ -1245,6 +1248,7 @@ function hydrateSnapshot(row) {
             animated: !!e.animated,
             creatorId: e.creator_id,
             createdAt: e.created_at,
+            imageUrl: e.image_url,
             imageType: e.image_type,
             imageData: e.image_data
         })),

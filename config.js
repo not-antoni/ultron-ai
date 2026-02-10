@@ -51,6 +51,8 @@ module.exports = {
         snapshotIntervalMs: parseInt(process.env.SECURITY_SNAPSHOT_INTERVAL_MS || '300000', 10),
         snapshotRetention: parseInt(process.env.SECURITY_SNAPSHOT_RETENTION || '3', 10),
         snapshotIncludeMembers: parseBool(process.env.SECURITY_SNAPSHOT_INCLUDE_MEMBERS, true),
+        snapshotMessageLimit: parseInt(process.env.SECURITY_SNAPSHOT_MESSAGE_LIMIT || '10', 10),
+        restoreFallbackMessages: parseBool(process.env.SECURITY_RESTORE_FALLBACK_MESSAGES, false),
         snapshotEmojiAssetLimit: parseInt(process.env.SECURITY_SNAPSHOT_EMOJI_ASSET_LIMIT || '100', 10),
         snapshotEmojiAssetMaxBytes: parseInt(process.env.SECURITY_SNAPSHOT_EMOJI_ASSET_MAX_BYTES || '262144', 10),
         snapshotEmojiAssetTimeoutMs: parseInt(process.env.SECURITY_SNAPSHOT_EMOJI_ASSET_TIMEOUT_MS || '5000', 10),

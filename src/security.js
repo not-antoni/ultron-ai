@@ -13,6 +13,8 @@ const securityCfg = config.security || {};
 const SNAPSHOT_INTERVAL_MS = securityCfg.snapshotIntervalMs ?? (5 * 60 * 1000);
 const SNAPSHOT_RETENTION = securityCfg.snapshotRetention ?? 10;
 const SNAPSHOT_INCLUDE_MEMBERS = securityCfg.snapshotIncludeMembers ?? true;
+const SNAPSHOT_MESSAGE_LIMIT = securityCfg.snapshotMessageLimit ?? 10;
+const RESTORE_FALLBACK_MESSAGES = securityCfg.restoreFallbackMessages ?? false;
 const SNAPSHOT_EMOJI_ASSET_LIMIT = securityCfg.snapshotEmojiAssetLimit ?? 100;
 const SNAPSHOT_EMOJI_ASSET_MAX_BYTES = securityCfg.snapshotEmojiAssetMaxBytes ?? (256 * 1024);
 const SNAPSHOT_EMOJI_ASSET_TIMEOUT_MS = securityCfg.snapshotEmojiAssetTimeoutMs ?? 5000;
@@ -101,20 +103,25 @@ function isTrustedExecutor(guild, executorId) {
     return false;
 }
 
-function pickSnapshotMessages(snapshot, channelId, channelName, limit = 2) {
+function pickSnapshotMessages(snapshot, channelId, channelName, limit = SNAPSHOT_MESSAGE_LIMIT) {
     if (!snapshot?.messages) return [];
     const candidates = snapshot.messages.filter(m => m.content);
-    const exact = candidates.filter(m => m.channelId === channelId);
-    if (exact.length > 0) {
-        return exact.slice(0, limit);
-    }
-    if (channelName && snapshot.channels) {
+    let list = candidates.filter(m => m.channelId === channelId);
+    if (list.length === 0 && channelName && snapshot.channels) {
         const match = snapshot.channels.find(ch => ch.name?.toLowerCase() === channelName.toLowerCase());
-        if (match) {
-            return candidates.filter(m => m.channelId === match.id).slice(0, limit);
-        }
+        if (match) list = candidates.filter(m => m.channelId === match.id);
     }
-    return [];
+    if (list.length === 0) return [];
+
+    const sorted = list
+        .map(m => ({
+            ...m,
+            _ts: m.createdAt ? Date.parse(m.createdAt) : 0
+        }))
+        .sort((a, b) => (a._ts || 0) - (b._ts || 0));
+
+    if (sorted.length <= limit) return sorted;
+    return sorted.slice(sorted.length - limit);
 }
 
 async function ensureCriticalChannels(guild, reason, snapshot = null) {
@@ -152,16 +159,29 @@ async function ensureCriticalChannels(guild, reason, snapshot = null) {
 
     const latestSnapshot = snapshot || store.getLatestGuildSnapshot(guild.id);
 
+    const channelHasMessages = async (channel) => {
+        if (!channel?.isTextBased?.()) return false;
+        try {
+            const fetched = await channel.messages.fetch({ limit: 1 });
+            return fetched.size > 0;
+        } catch (_) {
+            return false;
+        }
+    };
+
     if (securityCfg.restoreRulesChannel) {
         const rulesName = securityCfg.rulesChannelName || 'rules';
         const rulesChannel = await ensureChannel(rulesName, ChannelType.GuildText);
         if (rulesChannel) {
-            const storedMessages = pickSnapshotMessages(latestSnapshot, rulesChannel.id, rulesName, 2);
+            const storedMessages = pickSnapshotMessages(latestSnapshot, rulesChannel.id, rulesName, SNAPSHOT_MESSAGE_LIMIT);
             if (storedMessages.length > 0) {
-                for (const msg of storedMessages) {
-                    await rulesChannel.send(msg.content).catch(() => {});
+                const shouldSend = !(await channelHasMessages(rulesChannel));
+                if (shouldSend) {
+                    for (const msg of storedMessages) {
+                        await rulesChannel.send(msg.content).catch(() => {});
+                    }
                 }
-            } else if (securityCfg.rulesMessage) {
+            } else if (RESTORE_FALLBACK_MESSAGES && securityCfg.rulesMessage) {
                 await rulesChannel.send(securityCfg.rulesMessage).catch(() => {});
             }
             if (me.permissions.has(PermissionFlagsBits.ManageGuild)) {
@@ -175,12 +195,15 @@ async function ensureCriticalChannels(guild, reason, snapshot = null) {
         const annName = securityCfg.announcementsChannelName || 'announcements';
         const annChannel = await ensureChannel(annName, ChannelType.GuildAnnouncement);
         if (annChannel) {
-            const storedMessages = pickSnapshotMessages(latestSnapshot, annChannel.id, annName, 2);
+            const storedMessages = pickSnapshotMessages(latestSnapshot, annChannel.id, annName, SNAPSHOT_MESSAGE_LIMIT);
             if (storedMessages.length > 0) {
-                for (const msg of storedMessages) {
-                    await annChannel.send(msg.content).catch(() => {});
+                const shouldSend = !(await channelHasMessages(annChannel));
+                if (shouldSend) {
+                    for (const msg of storedMessages) {
+                        await annChannel.send(msg.content).catch(() => {});
+                    }
                 }
-            } else if (securityCfg.announcementsMessage) {
+            } else if (RESTORE_FALLBACK_MESSAGES && securityCfg.announcementsMessage) {
                 await annChannel.send(securityCfg.announcementsMessage).catch(() => {});
             }
             if (securityCfg.setSystemChannelToAnnouncements && me.permissions.has(PermissionFlagsBits.ManageGuild)) {
@@ -331,6 +354,19 @@ function buildEmojiAttachment(emoji) {
     }
 }
 
+async function resolveEmojiAttachmentFromSnapshot(snap) {
+    let attachment = buildEmojiAttachment(snap);
+    if (attachment) return attachment;
+    if (snap?.imageUrl) {
+        const asset = await fetchEmojiAssetFromUrl(snap.imageUrl, snap.animated);
+        if (asset) {
+            attachment = buildEmojiAttachment(asset);
+            if (attachment) return attachment;
+        }
+    }
+    return null;
+}
+
 async function restoreEmojis(guild, snapshot) {
     const results = { updated: 0, created: 0, failed: 0, skipped: 0 };
     const me = guild.members.me || guild.members.cache.get(guild.client.user.id);
@@ -367,7 +403,7 @@ async function restoreEmojis(guild, snapshot) {
             continue;
         }
 
-        const attachment = buildEmojiAttachment(snap);
+        const attachment = await resolveEmojiAttachmentFromSnapshot(snap);
         if (!attachment || !snap.name) {
             results.skipped += 1;
             continue;
@@ -423,7 +459,7 @@ async function syncEmojisFull(guild, snapshot) {
             continue;
         }
 
-        const attachment = buildEmojiAttachment(snap);
+        const attachment = await resolveEmojiAttachmentFromSnapshot(snap);
         if (!attachment || !snap.name) {
             results.skipped += 1;
             continue;
@@ -969,6 +1005,7 @@ async function restoreOverwritesWithMapping(guild, snapshot, channelIdMap, roleI
 
 async function restoreAll(guild, snapshot) {
     const results = {
+        critical: [],
         guild: null,
         channels: null,
         roles: null,
@@ -982,6 +1019,8 @@ async function restoreAll(guild, snapshot) {
     const channelSync = await syncChannelsFull(guild, snapshot);
     results.roles = roleSync;
     results.channels = channelSync;
+
+    results.critical = await ensureCriticalChannels(guild, 'manual-restore', snapshot);
 
     results.overwrites = await restoreOverwritesWithMapping(
         guild,
@@ -1275,6 +1314,28 @@ async function fetchEmojiAsset(emoji) {
     }
 }
 
+async function fetchEmojiAssetFromUrl(url, animated = false) {
+    if (!url) return null;
+    const fetchImpl = getFetchImpl();
+    if (!fetchImpl) return null;
+
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), SNAPSHOT_EMOJI_ASSET_TIMEOUT_MS);
+    try {
+        const res = await fetchImpl(url, { signal: controller.signal });
+        if (!res.ok) return null;
+        const arrayBuffer = await res.arrayBuffer();
+        const buffer = Buffer.from(arrayBuffer);
+        if (buffer.length > SNAPSHOT_EMOJI_ASSET_MAX_BYTES) return null;
+        const contentType = res.headers.get('content-type') || (animated ? 'image/gif' : 'image/png');
+        return { imageType: contentType, imageData: buffer };
+    } catch (_) {
+        return null;
+    } finally {
+        clearTimeout(timeout);
+    }
+}
+
 async function runWithConcurrency(items, limit, task) {
     if (!items.length) return;
     const queue = items.slice();
@@ -1399,12 +1460,25 @@ async function buildSnapshot(guild) {
 
     const emojis = emojiEntries.map(emoji => {
         const asset = emojiAssets.get(emoji.id) || {};
+        let imageUrl = null;
+        try {
+            if (typeof emoji.imageURL === 'function') {
+                imageUrl = emoji.imageURL({
+                    extension: emoji.animated ? 'gif' : 'png',
+                    size: SNAPSHOT_EMOJI_ASSET_SIZE
+                });
+            }
+            if (!imageUrl && emoji.url) imageUrl = emoji.url;
+        } catch (_) {
+            imageUrl = emoji.url || null;
+        }
         return {
             id: emoji.id,
             name: emoji.name,
             animated: !!emoji.animated,
             creatorId: emoji.author?.id || null,
             createdAt: emoji.createdTimestamp ? new Date(emoji.createdTimestamp).toISOString() : null,
+            imageUrl,
             imageType: asset.imageType || null,
             imageData: asset.imageData || null
         };
@@ -1574,7 +1648,7 @@ async function buildSnapshot(guild) {
         const channel = guild.channels.cache.get(channelId);
         if (!channel || !channel.isTextBased?.()) continue;
         try {
-            const fetched = await channel.messages.fetch({ limit: 5 });
+            const fetched = await channel.messages.fetch({ limit: SNAPSHOT_MESSAGE_LIMIT });
             let added = 0;
             for (const [, msg] of fetched) {
                 if (!msg.content) continue;
@@ -1586,7 +1660,7 @@ async function buildSnapshot(guild) {
                     createdAt: msg.createdTimestamp ? new Date(msg.createdTimestamp).toISOString() : null
                 });
                 added += 1;
-                if (added >= 3) break;
+                if (added >= SNAPSHOT_MESSAGE_LIMIT) break;
             }
         } catch (_) {}
     }
