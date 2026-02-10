@@ -414,6 +414,63 @@ function update(name, fn, fallback = null) {
     return updateTx(name, fn, fallback);
 }
 
+function migrateLegacyJsonFiles() {
+    let files = [];
+    try {
+        files = fs.readdirSync(DATA_DIR).filter(f => f.endsWith('.json'));
+    } catch (_) {
+        return;
+    }
+    if (files.length === 0) return;
+
+    for (const file of files) {
+        const parsed = parseFilename(file);
+        if (!parsed) continue;
+        const fullPath = path.join(DATA_DIR, file);
+
+        let data;
+        try {
+            const raw = fs.readFileSync(fullPath, 'utf8');
+            data = JSON.parse(raw);
+        } catch (_) {
+            continue;
+        }
+
+        let exists = false;
+        try {
+            if (parsed.table === 'conversations') {
+                exists = !!stmt('migrate_has_conv',
+                    'SELECT 1 FROM conversations WHERE guild_id = ? AND user_id = ?'
+                ).get(parsed.guildId, parsed.userId);
+            } else {
+                exists = !!stmt(`migrate_has_${parsed.table}`,
+                    `SELECT 1 FROM ${parsed.table} WHERE guild_id = ?`
+                ).get(parsed.guildId);
+            }
+        } catch (_) {
+            exists = false;
+        }
+
+        let migrated = exists;
+        if (!exists) {
+            try {
+                write(file, data);
+                migrated = true;
+            } catch (_) {
+                migrated = false;
+            }
+        }
+
+        if (migrated) {
+            try {
+                fs.unlinkSync(fullPath);
+            } catch (_) {}
+        }
+    }
+}
+
+migrateLegacyJsonFiles();
+
 // ── Extended API (new for SQLite) ──
 
 function cleanupConversations(maxAgeDays) {

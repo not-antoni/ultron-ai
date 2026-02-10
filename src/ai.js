@@ -528,6 +528,13 @@ async function generateWithGemma(systemPrompt, contents, message, images = [], u
     const toolPrompt = buildToolPrompt(selectedTools, toolChoice, nonce);
 
     const working = contents.map(entry => ({ role: entry.role, parts: [...entry.parts] }));
+    const useSystemInstruction = !/gemma/i.test(String(config.ai.model || ''));
+    if (!useSystemInstruction) {
+        working.unshift(
+            { role: 'user', parts: [{ text: `[SYSTEM]\n${systemPrompt}` }] },
+            { role: 'model', parts: [{ text: 'Understood.' }] }
+        );
+    }
     if (toolPrompt) {
         working.splice(working.length - 1, 0,
             { role: 'user', parts: [{ text: toolPrompt }] },
@@ -539,11 +546,12 @@ async function generateWithGemma(systemPrompt, contents, message, images = [], u
         await attachImagesToLastMessage(working, images);
     }
 
-    const model = genAI.getGenerativeModel({
+    const modelConfig = {
         model: config.ai.model,
-        systemInstruction: systemPrompt,
         generationConfig: buildGenerationConfig()
-    });
+    };
+    if (useSystemInstruction) modelConfig.systemInstruction = systemPrompt;
+    const model = genAI.getGenerativeModel(modelConfig);
 
     const toolLog = [];
     let rounds = 0;
