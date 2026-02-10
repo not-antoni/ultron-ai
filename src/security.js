@@ -804,16 +804,29 @@ async function runSnapshotScan(guild) {
 }
 
 function startSecurityMonitor(client) {
-    setInterval(() => {
-        for (const [, guild] of client.guilds.cache) {
-            runSnapshotScan(guild).catch(err => log.warn(`Snapshot scan failed for ${guild.id}: ${err.message}`));
+    let scanRunning = false;
+    const runScan = async () => {
+        if (scanRunning) return;
+        scanRunning = true;
+        try {
+            for (const [, guild] of client.guilds.cache) {
+                try {
+                    await runSnapshotScan(guild);
+                } catch (err) {
+                    log.warn(`Snapshot scan failed for ${guild.id}: ${err.message}`);
+                }
+            }
+        } finally {
+            scanRunning = false;
         }
+    };
+
+    setInterval(() => {
+        runScan().catch(err => log.warn(`Snapshot scan loop failed: ${err.message}`));
     }, SNAPSHOT_INTERVAL_MS);
 
     // Initial baseline after startup
-    for (const [, guild] of client.guilds.cache) {
-        runSnapshotScan(guild).catch(err => log.warn(`Initial snapshot failed for ${guild.id}: ${err.message}`));
-    }
+    runScan().catch(err => log.warn(`Initial snapshot scan failed: ${err.message}`));
 }
 
 // ── Event Handlers ──

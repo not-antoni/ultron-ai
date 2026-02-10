@@ -145,15 +145,13 @@ const CATEGORY_KEYWORDS = {
     config: /\b(?:emoji|emote|sticker|webhook|invite|event|schedule|automod|welcome|goodbye|autorole|reaction\s?role)\b/i,
 };
 
+const ACTION_PATTERN = /\b(?:create|make|add|build|delete|remove|destroy|kick|ban|timeout|mute|purge|send|lock|unlock|set|assign|move|clone|rename|edit|change|update|pin|unpin|setup|configure|save|dm|clear)\b/i;
+const QUERY_PATTERN = /\b(?:what|who|when|where|how|why|list|show|tell|info|status|get|read|check|describe|count|many)\b/i;
+
 function selectToolsForMessage(userInput, userTier) {
-    const input = userInput.toLowerCase();
-
-    // Start with base tools
-    const selectedNames = new Set(BASE_TOOL_NAMES);
-
-    // Add info category always (lightweight read-only tools)
-    const infoTools = toolsByCategory.get('info');
-    if (infoTools) for (const decl of infoTools) selectedNames.add(decl.name);
+    const input = (userInput || '').toLowerCase();
+    const hasAction = ACTION_PATTERN.test(input);
+    const hasQuery = QUERY_PATTERN.test(input);
 
     // Match keywords to categories
     const matchedCategories = new Set();
@@ -163,12 +161,17 @@ function selectToolsForMessage(userInput, userTier) {
         }
     }
 
-    // If no specific categories matched, include common action categories
-    if (matchedCategories.size === 0) {
-        matchedCategories.add('channel');
-        matchedCategories.add('role');
-        matchedCategories.add('message');
-        matchedCategories.add('moderation');
+    // If no intent or category match, skip tools entirely
+    if (!hasAction && !hasQuery && matchedCategories.size === 0) return [];
+    if (!hasAction && matchedCategories.size === 0) return [];
+
+    // Start with base tools
+    const selectedNames = new Set(BASE_TOOL_NAMES);
+
+    // Add info category only when a query is detected
+    if (hasQuery) {
+        const infoTools = toolsByCategory.get('info');
+        if (infoTools) for (const decl of infoTools) selectedNames.add(decl.name);
     }
 
     // Add tools from matched categories using pre-indexed map
@@ -194,12 +197,12 @@ function selectToolsForMessage(userInput, userTier) {
 
 // ── Dynamic tool_choice Detection ──
 
-const ACTION_PATTERN = /\b(?:create|make|add|build|delete|remove|destroy|kick|ban|timeout|mute|purge|send|lock|unlock|set|assign|move|clone|rename|edit|change|update|pin|unpin|setup|configure|save|dm|clear)\b/i;
-const QUERY_PATTERN = /\b(?:what|who|when|where|how|why|list|show|tell|info|status|get|read|check|describe|count|many)\b/i;
-
 function detectToolChoice(userInput) {
-    const hasAction = ACTION_PATTERN.test(userInput);
-    const hasQuery = QUERY_PATTERN.test(userInput);
+    const input = userInput || '';
+    const hasAction = ACTION_PATTERN.test(input);
+    const hasQuery = QUERY_PATTERN.test(input);
+
+    if (!hasAction && !hasQuery) return 'none';
 
     // If clear action intent and no query words, force tool use
     if (hasAction && !hasQuery) return 'required';
@@ -247,6 +250,7 @@ function convertToolsForOpenAI(declarations) {
 }
 
 function buildToolPrompt(selectedTools, toolChoice, nonce) {
+    if (toolChoice === 'none') return '';
     if (!selectedTools || selectedTools.length === 0) return '';
 
     const lines = [];
@@ -433,14 +437,18 @@ async function openaiRequest(messages, tools, toolChoice) {
         baseOpts.tool_choice = toolChoice || 'auto';
     }
     const opts = { ...baseOpts };
-    if (config.openai.reasoningEffort) opts.reasoning_effort = config.openai.reasoningEffort;
-    if (config.openai.verbosity) opts.verbosity = config.openai.verbosity;
+    const modelName = String(config.openai.model || '');
+    const defaultReasoning = /^gpt-5/i.test(modelName) ? 'minimal' : null;
+    const reasoningEffort = config.openai.reasoningEffort || defaultReasoning;
+    const verbosity = config.openai.verbosity || null;
+    if (reasoningEffort) opts.reasoning_effort = reasoningEffort;
+    if (verbosity) opts.verbosity = verbosity;
 
     try {
         return await withTimeout(openai.chat.completions.create(opts));
     } catch (err) {
         const msg = err?.message || '';
-        if ((config.openai.reasoningEffort || config.openai.verbosity) &&
+        if ((reasoningEffort || verbosity) &&
             /reasoning|verbosity|unknown|invalid/i.test(msg)) {
             openaiLog.warn(`OpenAI params rejected, retrying without reasoning/verbosity: ${msg}`);
             return await withTimeout(openai.chat.completions.create(baseOpts));
@@ -456,7 +464,8 @@ async function generateWithOpenAI(systemPrompt, contents, message, images = [], 
 
     const selectedTools = selectToolsForMessage(userInput, userTier);
     const openaiTools = convertToolsForOpenAI(selectedTools);
-    const toolChoice = detectToolChoice(userInput);
+    const rawToolChoice = detectToolChoice(userInput);
+    const toolChoice = openaiTools.length > 0 ? rawToolChoice : 'none';
 
     const messages = buildOpenAIMessages(systemPrompt, contents, images);
 
@@ -464,7 +473,8 @@ async function generateWithOpenAI(systemPrompt, contents, message, images = [], 
     let rounds = 0;
     while (rounds <= config.maxToolRounds) {
         const currentChoice = rounds === 0 ? toolChoice : 'auto';
-        const completion = await openaiRequest(messages, openaiTools, currentChoice);
+        const useTools = currentChoice !== 'none' && openaiTools.length > 0;
+        const completion = await openaiRequest(messages, useTools ? openaiTools : null, useTools ? currentChoice : null);
         const assistant = completion?.choices?.[0]?.message || {};
 
         messages.push({
@@ -512,7 +522,8 @@ async function generateWithGemma(systemPrompt, contents, message, images = [], u
     if (!genAI) throw new Error('Gemma not configured');
 
     const selectedTools = selectToolsForMessage(userInput, userTier);
-    const toolChoice = detectToolChoice(userInput);
+    const rawToolChoice = detectToolChoice(userInput);
+    const toolChoice = selectedTools.length > 0 ? rawToolChoice : 'none';
     const nonce = crypto.randomBytes(3).toString('hex');
     const toolPrompt = buildToolPrompt(selectedTools, toolChoice, nonce);
 
