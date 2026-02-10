@@ -10,6 +10,7 @@ const db = new Database(DB_PATH);
 
 db.pragma('journal_mode = WAL');
 db.pragma('busy_timeout = 5000');
+db.pragma('foreign_keys = ON');
 
 db.exec(`
     CREATE TABLE IF NOT EXISTS guild_config (
@@ -58,6 +59,67 @@ db.exec(`
         reason TEXT
     );
     CREATE INDEX IF NOT EXISTS idx_temp_bans_unban ON temp_bans(unban_at);
+
+    CREATE TABLE IF NOT EXISTS guild_snapshots (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        guild_id TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        member_count INTEGER,
+        channel_count INTEGER,
+        role_count INTEGER,
+        emoji_count INTEGER,
+        checksum TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_snapshots_guild ON guild_snapshots(guild_id, created_at);
+
+    CREATE TABLE IF NOT EXISTS guild_snapshot_channels (
+        snapshot_id INTEGER NOT NULL,
+        channel_id TEXT NOT NULL,
+        name TEXT NOT NULL,
+        type INTEGER NOT NULL,
+        parent_id TEXT,
+        position INTEGER,
+        nsfw INTEGER,
+        rate_limit_per_user INTEGER,
+        bitrate INTEGER,
+        user_limit INTEGER,
+        PRIMARY KEY (snapshot_id, channel_id),
+        FOREIGN KEY(snapshot_id) REFERENCES guild_snapshots(id) ON DELETE CASCADE
+    );
+
+    CREATE TABLE IF NOT EXISTS guild_snapshot_roles (
+        snapshot_id INTEGER NOT NULL,
+        role_id TEXT NOT NULL,
+        name TEXT NOT NULL,
+        color INTEGER,
+        position INTEGER,
+        permissions TEXT,
+        mentionable INTEGER,
+        hoist INTEGER,
+        managed INTEGER,
+        PRIMARY KEY (snapshot_id, role_id),
+        FOREIGN KEY(snapshot_id) REFERENCES guild_snapshots(id) ON DELETE CASCADE
+    );
+
+    CREATE TABLE IF NOT EXISTS guild_snapshot_emojis (
+        snapshot_id INTEGER NOT NULL,
+        emoji_id TEXT NOT NULL,
+        name TEXT NOT NULL,
+        animated INTEGER,
+        PRIMARY KEY (snapshot_id, emoji_id),
+        FOREIGN KEY(snapshot_id) REFERENCES guild_snapshots(id) ON DELETE CASCADE
+    );
+
+    CREATE TABLE IF NOT EXISTS security_events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        guild_id TEXT NOT NULL,
+        type TEXT NOT NULL,
+        severity TEXT NOT NULL,
+        summary TEXT NOT NULL,
+        details TEXT,
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_security_events_guild ON security_events(guild_id, created_at);
 `);
 
 // ── Filename → table/key mapping ──
@@ -209,8 +271,170 @@ function removeTempBan(id) {
     stmt('remove_temp_ban', 'DELETE FROM temp_bans WHERE id = ?').run(id);
 }
 
+// ── Guild Snapshot Helpers ──
+
+const insertSnapshotTx = db.transaction(snapshot => {
+    const now = snapshot.createdAt || new Date().toISOString();
+    const info = stmt('insert_snapshot',
+        `INSERT INTO guild_snapshots (guild_id, created_at, member_count, channel_count, role_count, emoji_count, checksum)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`
+    ).run(
+        snapshot.guildId,
+        now,
+        snapshot.memberCount ?? null,
+        snapshot.channelCount ?? null,
+        snapshot.roleCount ?? null,
+        snapshot.emojiCount ?? null,
+        snapshot.checksum || null
+    );
+
+    const snapshotId = Number(info.lastInsertRowid);
+
+    const insertChannel = stmt('insert_snapshot_channel',
+        `INSERT INTO guild_snapshot_channels
+         (snapshot_id, channel_id, name, type, parent_id, position, nsfw, rate_limit_per_user, bitrate, user_limit)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    );
+    for (const ch of snapshot.channels || []) {
+        insertChannel.run(
+            snapshotId,
+            ch.id,
+            ch.name,
+            ch.type,
+            ch.parentId || null,
+            ch.position ?? null,
+            ch.nsfw ? 1 : 0,
+            ch.rateLimitPerUser ?? null,
+            ch.bitrate ?? null,
+            ch.userLimit ?? null
+        );
+    }
+
+    const insertRole = stmt('insert_snapshot_role',
+        `INSERT INTO guild_snapshot_roles
+         (snapshot_id, role_id, name, color, position, permissions, mentionable, hoist, managed)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    );
+    for (const role of snapshot.roles || []) {
+        insertRole.run(
+            snapshotId,
+            role.id,
+            role.name,
+            role.color ?? null,
+            role.position ?? null,
+            role.permissions || null,
+            role.mentionable ? 1 : 0,
+            role.hoist ? 1 : 0,
+            role.managed ? 1 : 0
+        );
+    }
+
+    const insertEmoji = stmt('insert_snapshot_emoji',
+        `INSERT INTO guild_snapshot_emojis
+         (snapshot_id, emoji_id, name, animated)
+         VALUES (?, ?, ?, ?)`
+    );
+    for (const emoji of snapshot.emojis || []) {
+        insertEmoji.run(
+            snapshotId,
+            emoji.id,
+            emoji.name,
+            emoji.animated ? 1 : 0
+        );
+    }
+
+    return snapshotId;
+});
+
+function createGuildSnapshot(snapshot) {
+    return insertSnapshotTx(snapshot);
+}
+
+function getLatestGuildSnapshot(guildId) {
+    const row = stmt('latest_snapshot',
+        'SELECT * FROM guild_snapshots WHERE guild_id = ? ORDER BY id DESC LIMIT 1'
+    ).get(guildId);
+    if (!row) return null;
+
+    const channels = stmt('snapshot_channels',
+        'SELECT * FROM guild_snapshot_channels WHERE snapshot_id = ?'
+    ).all(row.id);
+    const roles = stmt('snapshot_roles',
+        'SELECT * FROM guild_snapshot_roles WHERE snapshot_id = ?'
+    ).all(row.id);
+    const emojis = stmt('snapshot_emojis',
+        'SELECT * FROM guild_snapshot_emojis WHERE snapshot_id = ?'
+    ).all(row.id);
+
+    return {
+        id: row.id,
+        guildId: row.guild_id,
+        createdAt: row.created_at,
+        memberCount: row.member_count,
+        channelCount: row.channel_count,
+        roleCount: row.role_count,
+        emojiCount: row.emoji_count,
+        checksum: row.checksum,
+        channels: channels.map(ch => ({
+            id: ch.channel_id,
+            name: ch.name,
+            type: ch.type,
+            parentId: ch.parent_id,
+            position: ch.position,
+            nsfw: !!ch.nsfw,
+            rateLimitPerUser: ch.rate_limit_per_user,
+            bitrate: ch.bitrate,
+            userLimit: ch.user_limit
+        })),
+        roles: roles.map(r => ({
+            id: r.role_id,
+            name: r.name,
+            color: r.color,
+            position: r.position,
+            permissions: r.permissions,
+            mentionable: !!r.mentionable,
+            hoist: !!r.hoist,
+            managed: !!r.managed
+        })),
+        emojis: emojis.map(e => ({
+            id: e.emoji_id,
+            name: e.name,
+            animated: !!e.animated
+        }))
+    };
+}
+
+function pruneGuildSnapshots(guildId, keep = 10) {
+    if (keep <= 0) return 0;
+    const threshold = stmt('snapshot_prune_threshold',
+        'SELECT id FROM guild_snapshots WHERE guild_id = ? ORDER BY id DESC LIMIT 1 OFFSET ?'
+    ).get(guildId, keep - 1);
+    if (!threshold) return 0;
+    const result = stmt('snapshot_prune',
+        'DELETE FROM guild_snapshots WHERE guild_id = ? AND id < ?'
+    ).run(guildId, threshold.id);
+    return result.changes;
+}
+
+// ── Security Events ──
+
+function logSecurityEvent(guildId, type, severity, summary, details) {
+    try {
+        stmt('log_security_event',
+            'INSERT INTO security_events (guild_id, type, severity, summary, details, created_at) VALUES (?, ?, ?, ?, ?, ?)'
+        ).run(guildId, type, severity, summary, details || null, new Date().toISOString());
+    } catch (_) {}
+}
+
 function close() {
     db.close();
 }
 
-module.exports = { read, write, update, cleanupConversations, logAudit, getAuditTrail, addTempBan, getExpiredTempBans, removeTempBan, close };
+module.exports = {
+    read, write, update, cleanupConversations,
+    logAudit, getAuditTrail,
+    addTempBan, getExpiredTempBans, removeTempBan,
+    createGuildSnapshot, getLatestGuildSnapshot, pruneGuildSnapshots,
+    logSecurityEvent,
+    close
+};

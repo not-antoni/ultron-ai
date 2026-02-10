@@ -6,6 +6,7 @@ initLogger(config.logging);
 const log = createLogger('Ultron');
 const store = require('./src/store');
 const { commands } = require('./src/commands');
+const security = require('./src/security');
 const {
     handleReady, handleMessageCreate, handleInteraction,
     handleMemberJoin, handleMemberLeave,
@@ -23,7 +24,9 @@ const client = new Client({
         GatewayIntentBits.MessageContent,
         GatewayIntentBits.DirectMessages,
         GatewayIntentBits.GuildMessageReactions,
-        GatewayIntentBits.GuildVoiceStates
+        GatewayIntentBits.GuildVoiceStates,
+        GatewayIntentBits.GuildEmojisAndStickers,
+        GatewayIntentBits.GuildModeration
     ],
     allowedMentions: { parse: ['users'], repliedUser: false },
     partials: [Partials.Message, Partials.Channel, Partials.Reaction]
@@ -33,6 +36,7 @@ const client = new Client({
 
 client.once(Events.ClientReady, async () => {
     await handleReady(client);
+    security.startSecurityMonitor(client);
 
     // Deploy slash commands globally only (shows on bot profile)
     try {
@@ -85,6 +89,7 @@ client.on(Events.InteractionCreate, async interaction => {
 client.on(Events.GuildMemberAdd, async member => {
     try {
         await handleMemberJoin(member);
+        await security.handleMemberJoin(member);
     } catch (error) {
         log.error('Member join error:', error);
     }
@@ -95,6 +100,86 @@ client.on(Events.GuildMemberRemove, async member => {
         await handleMemberLeave(member);
     } catch (error) {
         log.error('Member leave error:', error);
+    }
+});
+
+client.on(Events.ChannelCreate, async channel => {
+    try {
+        await security.handleChannelCreate(channel);
+    } catch (error) {
+        log.error('Security channel create error:', error);
+    }
+});
+
+client.on(Events.ChannelDelete, async channel => {
+    try {
+        await security.handleChannelDelete(channel);
+    } catch (error) {
+        log.error('Security channel delete error:', error);
+    }
+});
+
+client.on(Events.ChannelUpdate, async (oldChannel, newChannel) => {
+    try {
+        await security.handleChannelUpdate(oldChannel, newChannel);
+    } catch (error) {
+        log.error('Security channel update error:', error);
+    }
+});
+
+client.on(Events.GuildRoleCreate, async role => {
+    try {
+        await security.handleRoleCreate(role);
+    } catch (error) {
+        log.error('Security role create error:', error);
+    }
+});
+
+client.on(Events.GuildRoleDelete, async role => {
+    try {
+        await security.handleRoleDelete(role);
+    } catch (error) {
+        log.error('Security role delete error:', error);
+    }
+});
+
+client.on(Events.GuildRoleUpdate, async (oldRole, newRole) => {
+    try {
+        await security.handleRoleUpdate(oldRole, newRole);
+    } catch (error) {
+        log.error('Security role update error:', error);
+    }
+});
+
+client.on(Events.GuildEmojiCreate, async emoji => {
+    try {
+        await security.handleEmojiCreate(emoji);
+    } catch (error) {
+        log.error('Security emoji create error:', error);
+    }
+});
+
+client.on(Events.GuildEmojiDelete, async emoji => {
+    try {
+        await security.handleEmojiDelete(emoji);
+    } catch (error) {
+        log.error('Security emoji delete error:', error);
+    }
+});
+
+client.on(Events.GuildEmojiUpdate, async (oldEmoji, newEmoji) => {
+    try {
+        await security.handleEmojiUpdate(oldEmoji, newEmoji);
+    } catch (error) {
+        log.error('Security emoji update error:', error);
+    }
+});
+
+client.on(Events.GuildBanAdd, async ban => {
+    try {
+        await security.handleGuildBanAdd(ban);
+    } catch (error) {
+        log.error('Security ban add error:', error);
     }
 });
 
@@ -218,8 +303,8 @@ if (!config.discord.token) {
     process.exit(1);
 }
 
-if (!config.gemini.apiKey) {
-    log.error('GEMINI_API_KEY is required.');
+if (!config.openai.apiKey && !config.ai.apiKey) {
+    log.error('OPENAI_API_KEY or GEMINI_API_KEY is required.');
     process.exit(1);
 }
 

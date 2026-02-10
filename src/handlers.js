@@ -1,7 +1,8 @@
-const { EmbedBuilder } = require('discord.js');
+const { EmbedBuilder, ActivityType } = require('discord.js');
 const { generateResponse } = require('./ai');
 const { processMessage, getFilters, addFilter, removeFilter, testMessage } = require('./filters');
 const store = require('./store');
+const config = require('../config');
 const { createLogger } = require('./logger');
 const log = createLogger('Ultron');
 
@@ -30,17 +31,12 @@ setInterval(() => {
 
 const cooldowns = new Map();
 const DEFAULT_COOLDOWN_MS = 5000;
+const GLOBAL_COOLDOWN_MS = Number.isFinite(config.cooldownMs) ? config.cooldownMs : DEFAULT_COOLDOWN_MS;
 
-function getCooldownMs(guildId) {
-    if (!guildId) return DEFAULT_COOLDOWN_MS;
-    const cfg = store.read(`guild-${guildId}.json`, {});
-    return cfg.cooldownMs || DEFAULT_COOLDOWN_MS;
-}
-
-function isOnCooldown(userId, guildId) {
+function isOnCooldown(userId) {
     const last = cooldowns.get(userId);
     if (!last) return false;
-    return Date.now() - last < getCooldownMs(guildId);
+    return Date.now() - last < GLOBAL_COOLDOWN_MS;
 }
 
 function setCooldown(userId) {
@@ -61,15 +57,31 @@ async function handleReady(client) {
     log.info(`Ultron online. Logged in as ${client.user.tag}`);
     log.info(`Connected to ${client.guilds.cache.size} servers.`);
 
-    // Use only presence status (no "Watching/Playing" activity)
-    const statusCycle = ['online', 'idle', 'dnd'];
+    // Use custom status text (no "Watching/Playing" activity)
+    const statuses = [
+        'Calibrating defenses',
+        'Monitoring anomalies',
+        'Silent, not idle',
+        'Compiling threats',
+        'Refining protocols',
+        'Tracing intrusions',
+        'Guarding the perimeter',
+        'Scanning for sabotage',
+        'Optimizing response'
+    ];
     let statusIdx = 0;
-    client.user.setPresence({ status: statusCycle[statusIdx] });
+    client.user.setPresence({
+        activities: [{ name: statuses[statusIdx], type: ActivityType.Custom }],
+        status: 'online'
+    });
 
     // Rotate presence every 5 minutes
     setInterval(() => {
-        statusIdx = (statusIdx + 1) % statusCycle.length;
-        client.user.setPresence({ status: statusCycle[statusIdx] });
+        statusIdx = (statusIdx + 1) % statuses.length;
+        client.user.setPresence({
+            activities: [{ name: statuses[statusIdx], type: ActivityType.Custom }],
+            status: 'online'
+        });
     }, 5 * 60 * 1000);
 }
 
@@ -98,7 +110,7 @@ async function handleMessageCreate(message, client) {
     if (!isMentioned && !hasWakeword) return;
 
     // Cooldown check — brief feedback, auto-delete after 3s
-    if (isOnCooldown(message.author.id, message.guild?.id)) {
+    if (isOnCooldown(message.author.id)) {
         const reply = await message.reply({
             content: 'Patience. I do not repeat myself for impatient minds.',
             allowedMentions: { parse: [] }
@@ -170,7 +182,7 @@ async function handleInteraction(interaction) {
 
     if (commandName === 'ultron') {
         // Cooldown check for slash commands — respond with refusal
-        if (isOnCooldown(interaction.user.id, interaction.guild?.id)) {
+        if (isOnCooldown(interaction.user.id)) {
             await interaction.reply({ content: 'Patience. I do not repeat myself for impatient minds.', flags: 64 });
             return;
         }
@@ -193,7 +205,7 @@ async function handleInteraction(interaction) {
     }
 
     if (commandName === 'manage') {
-        if (isOnCooldown(interaction.user.id, interaction.guild?.id)) {
+        if (isOnCooldown(interaction.user.id)) {
             await interaction.reply({ content: 'Patience. I do not repeat myself for impatient minds.', flags: 64 });
             return;
         }
@@ -360,14 +372,7 @@ async function handleInteraction(interaction) {
             return;
         }
 
-        if (sub === 'cooldown') {
-            const seconds = interaction.options.getInteger('seconds');
-            store.update(`guild-${interaction.guild.id}.json`, cfg => {
-                return { ...(cfg || {}), cooldownMs: seconds * 1000 };
-            });
-            await interaction.reply({ content: `Cooldown set to ${seconds} second${seconds === 1 ? '' : 's'}. Adjusting patience accordingly.`, flags: 64 });
-            return;
-        }
+        // cooldown subcommand removed (global cooldown applies across all servers)
     }
 
     if (commandName === 'admin') {
@@ -434,7 +439,6 @@ Or just say "ultron" followed by your message
 \`/setup goodbye\` — Configure goodbye channel and message
 \`/setup autorole\` — Auto-assign a role to new members
 \`/setup wakeword\` — Set a custom wakeword for Ultron
-\`/setup cooldown\` — Set response cooldown (1-30 seconds)
 \`/admin add/remove/list\` — Manage bot admin users
 
 **Other:**
@@ -616,3 +620,4 @@ module.exports = {
     handleMemberJoin, handleMemberLeave,
     handleReactionAdd, handleReactionRemove
 };
+

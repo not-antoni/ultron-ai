@@ -1,5 +1,6 @@
+﻿const crypto = require('crypto');
+const OpenAI = require('openai');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
-const Groq = require('groq-sdk');
 const config = require('../config');
 const { getSystemPrompt } = require('./persona');
 const { toolDeclarations } = require('./tools');
@@ -7,11 +8,11 @@ const { executeTool, getUserTier, TOOL_TIERS } = require('./tool-executor');
 const store = require('./store');
 const { createLogger } = require('./logger');
 const log = createLogger('Ultron');
-const groqLog = createLogger('Ultron/Groq');
-const geminiLog = createLogger('Ultron/Gemini');
+const openaiLog = createLogger('Ultron/OpenAI');
+const gemmaLog = createLogger('Ultron/Gemma');
 
-const genAI = new GoogleGenerativeAI(config.gemini.apiKey);
-const groq = config.groq.apiKey ? new Groq({ apiKey: config.groq.apiKey }) : null;
+const openai = config.openai?.apiKey ? new OpenAI({ apiKey: config.openai.apiKey }) : null;
+const genAI = config.ai?.apiKey ? new GoogleGenerativeAI(config.ai.apiKey) : null;
 
 const API_TIMEOUT_MS = 30000;
 function withTimeout(promise, ms = API_TIMEOUT_MS) {
@@ -207,18 +208,28 @@ function detectToolChoice(userInput) {
     return 'auto';
 }
 
-// ── Groq Provider (PRIMARY — native function calling) ──
+function normalizeSchemaType(type) {
+    if (!type) return 'string';
+    const raw = typeof type === 'string' ? type : String(type);
+    const value = raw.toLowerCase();
+    if (value.includes('string')) return 'string';
+    if (value.includes('number')) return 'number';
+    if (value.includes('integer')) return 'integer';
+    if (value.includes('boolean')) return 'boolean';
+    if (value.includes('array')) return 'array';
+    if (value.includes('object')) return 'object';
+    return 'string';
+}
 
-function convertToolsForGroq(declarations) {
+function convertToolsForOpenAI(declarations) {
     return declarations.map(decl => {
         const props = {};
-        if (decl.parameters?.properties) {
-            for (const [key, val] of Object.entries(decl.parameters.properties)) {
-                const prop = { type: val.type || 'string' };
-                if (val.description) prop.description = val.description;
-                if (val.enum) prop.enum = val.enum;
-                props[key] = prop;
-            }
+        const properties = decl.parameters?.properties || {};
+        for (const [key, val] of Object.entries(properties)) {
+            const prop = { type: normalizeSchemaType(val.type) };
+            if (val.description) prop.description = val.description;
+            if (val.enum) prop.enum = val.enum;
+            props[key] = prop;
         }
         return {
             type: 'function',
@@ -235,153 +246,243 @@ function convertToolsForGroq(declarations) {
     });
 }
 
-// Track which Groq model is currently active (cycles on 429)
-let activeGroqModelIdx = 0;
-let groqResetTimer = null;
+function buildToolPrompt(selectedTools, toolChoice, nonce) {
+    if (!selectedTools || selectedTools.length === 0) return '';
 
-// Track which Gemini model is currently active (cycles on 429)
-let activeGeminiModelIdx = 0;
+    const lines = [];
+    lines.push('[TOOLS]');
+    lines.push('Text-only tool calling is enabled.');
+    lines.push('To call a tool, output ONLY one line in this exact format:');
+    lines.push(`function=toolName>{JSON} #nonce:${nonce}`);
+    lines.push('If multiple tools are needed, output one line per tool call.');
+    if (toolChoice === 'required') {
+        lines.push('You MUST call a tool before responding.');
+    } else {
+        lines.push('Use tools to verify live server state before answering.');
+    }
+    lines.push('Available tools:');
 
-function getGroqModel() {
-    const models = config.groq.models || [config.groq.model || 'llama-3.3-70b-versatile'];
-    return models[activeGroqModelIdx % models.length];
+    for (const tool of selectedTools) {
+        const props = tool.parameters?.properties || {};
+        const required = new Set(tool.parameters?.required || []);
+        const parts = [];
+        for (const [key, val] of Object.entries(props)) {
+            const type = val.type || 'string';
+            const req = required.has(key) ? '' : '?';
+            const enumText = val.enum ? ` enum:${val.enum.join('|')}` : '';
+            const desc = val.description ? ` - ${val.description}` : '';
+            parts.push(`${key}${req}:${type}${enumText}${desc}`.trim());
+        }
+        const args = parts.length > 0 ? parts.join(', ') : 'none';
+        const desc = tool.description ? ` ${tool.description}` : '';
+        lines.push(`- ${tool.name}:${desc} Args: ${args}`);
+    }
+
+    lines.push('[/TOOLS]');
+    return lines.join('\n');
 }
 
-async function groqRequest(messages, tools, toolChoice) {
-    const models = config.groq.models || [config.groq.model || 'llama-3.3-70b-versatile'];
+async function attachImagesToLastMessage(contents, images) {
+    if (!images || images.length === 0) return;
+    const lastMsg = contents[contents.length - 1];
+    if (!lastMsg || !lastMsg.parts) return;
 
-    // Try each model until one works
-    for (let i = 0; i < models.length; i++) {
-        const modelIdx = (activeGroqModelIdx + i) % models.length;
-        const model = models[modelIdx];
-        const opts = { model, messages };
-        if (tools && tools.length > 0) {
-            opts.tools = tools;
-            opts.tool_choice = toolChoice || 'auto';
-        }
-
+    const imageParts = [];
+    const MAX_IMAGE_BYTES = 10 * 1024 * 1024; // 10MB
+    for (const url of images) {
         try {
-            const result = await withTimeout(groq.chat.completions.create(opts));
-            if (modelIdx !== activeGroqModelIdx) {
-                activeGroqModelIdx = modelIdx;
-                groqLog.info(`Switched to ${model}`);
+            const res = await fetch(url);
+            const contentLength = parseInt(res.headers.get('content-length') || '0', 10);
+            if (contentLength > MAX_IMAGE_BYTES) {
+                gemmaLog.warn(`Skipping image (${Math.round(contentLength / 1024 / 1024)}MB exceeds 10MB limit): ${url}`);
+                continue;
             }
-            return result;
+            const chunks = [];
+            let totalBytes = 0;
+            for await (const chunk of res.body) {
+                totalBytes += chunk.length;
+                if (totalBytes > MAX_IMAGE_BYTES) {
+                    gemmaLog.warn(`Skipping image (stream exceeded 10MB limit): ${url}`);
+                    break;
+                }
+                chunks.push(chunk);
+            }
+            if (totalBytes > MAX_IMAGE_BYTES) continue;
+            const buffer = Buffer.concat(chunks);
+            const mimeType = res.headers.get('content-type') || 'image/jpeg';
+            imageParts.push({ inlineData: { mimeType, data: buffer.toString('base64') } });
         } catch (err) {
-            if (err.status === 429) {
-                groqLog.warn(`${model} rate limited, trying next model...`);
-                // Set a timer to reset back to preferred model after 60s
-                if (groqResetTimer) clearTimeout(groqResetTimer);
-                groqResetTimer = setTimeout(() => {
-                    activeGroqModelIdx = 0;
-                    groqResetTimer = null;
-                    groqLog.info('Reset to preferred model');
-                }, 60000);
-                continue;
-            }
-            if (err.status === 400 || err.status === 413) {
-                groqLog.warn(`${model} ${err.status} (${err.message?.slice(0, 80)}), trying next model...`);
-                continue;
-            }
-            if (err.status === 503) {
-                groqLog.warn(`${model} 503 — retrying in 2s...`);
-                await new Promise(r => setTimeout(r, 2000));
-                try { return await withTimeout(groq.chat.completions.create(opts)); } catch (_) {}
-                continue;
-            }
-            throw err;
+            gemmaLog.error('Failed to fetch image:', err.message);
         }
     }
 
-    // All models exhausted
-    throw Object.assign(new Error('All Groq models rate limited'), { status: 429 });
+    if (imageParts.length > 0) {
+        lastMsg.parts = [...lastMsg.parts, ...imageParts];
+    }
 }
 
-async function generateWithGroq(systemPrompt, contents, message, userTier, userInput) {
-    const messages = [{ role: 'system', content: systemPrompt }];
-    for (const entry of contents) {
-        const text = entry.parts?.[0]?.text || '';
-        messages.push({ role: entry.role === 'model' ? 'assistant' : 'user', content: text });
+function buildGenerationConfig() {
+    const temperature = Number.isFinite(config.ai.temperature) ? config.ai.temperature : 0.2;
+    const topP = Number.isFinite(config.ai.topP) ? config.ai.topP : 0.9;
+    const topK = Number.isFinite(config.ai.topK) ? config.ai.topK : 40;
+    const maxOutputTokens = Number.isFinite(config.ai.maxOutputTokens) ? config.ai.maxOutputTokens : 512;
+
+    return { temperature, topP, topK, maxOutputTokens };
+}
+
+function lineContainsNonce(text, index, nonce) {
+    if (!nonce) return true;
+    const lineStart = text.lastIndexOf('\n', index) + 1;
+    let lineEnd = text.indexOf('\n', index);
+    if (lineEnd === -1) lineEnd = text.length;
+    return text.slice(lineStart, lineEnd).includes(nonce);
+}
+
+// Parse function calls that leaked into text content
+function parseLeakedToolCalls(text, nonce = '') {
+    const calls = [];
+    const toolNames = new Set(toolDeclarations.map(t => t.name));
+
+    // Pattern: toolName:N<|tool_call_argument_begin|>{"arg":"val"} (kimi-k2 leaked format)
+    const pattern0 = /(\w+):\d+<\|tool_call_argument_begin\|>/gi;
+    for (const match of text.matchAll(pattern0)) {
+        if (!lineContainsNonce(text, match.index, nonce)) continue;
+        if (toolNames.has(match[1])) {
+            const jsonStr = extractJSON(text, match.index + match[0].length);
+            if (jsonStr) {
+                try { calls.push({ name: match[1], args: JSON.parse(jsonStr) }); } catch (_) {}
+            }
+        }
     }
 
-    // Dynamic tool selection + tool_choice
+    // Pattern: <|tool_call_begin|>...<|tool_call_argument_begin|>{"arg":"val"}
+    if (calls.length === 0) {
+        const pattern0b = /<\|tool_call_begin\|>.*?(\w+).*?<\|tool_call_argument_begin\|>/gi;
+        for (const match of text.matchAll(pattern0b)) {
+            if (!lineContainsNonce(text, match.index, nonce)) continue;
+            if (toolNames.has(match[1])) {
+                const jsonStr = extractJSON(text, match.index + match[0].length);
+                if (jsonStr) {
+                    try { calls.push({ name: match[1], args: JSON.parse(jsonStr) }); } catch (_) {}
+                }
+            }
+        }
+    }
+
+    // Pattern: function=toolName>{"arg":"val"} or <function=toolName>{"arg":"val"}</function>
+    if (calls.length === 0) {
+        const pattern1 = /(?:<)?function=(\w+)>/gi;
+        for (const match of text.matchAll(pattern1)) {
+            if (!lineContainsNonce(text, match.index, nonce)) continue;
+            if (toolNames.has(match[1])) {
+                const jsonStr = extractJSON(text, match.index + match[0].length);
+                if (jsonStr) {
+                    try { calls.push({ name: match[1], args: JSON.parse(jsonStr) }); } catch (_) {}
+                }
+            }
+        }
+    }
+
+    // Pattern: toolName({"arg":"val"})
+    if (calls.length === 0) {
+        const pattern2 = /\b(\w+)\(/g;
+        for (const match of text.matchAll(pattern2)) {
+            if (!lineContainsNonce(text, match.index, nonce)) continue;
+            if (toolNames.has(match[1])) {
+                const jsonStr = extractJSON(text, match.index + match[0].length);
+                if (jsonStr) {
+                    try { calls.push({ name: match[1], args: JSON.parse(jsonStr) }); } catch (_) {}
+                }
+            }
+        }
+    }
+
+    return calls;
+}
+
+function buildOpenAIMessages(systemPrompt, contents, images) {
+    const messages = [{ role: 'system', content: systemPrompt }];
+    const lastIdx = contents.length - 1;
+    for (let i = 0; i < contents.length; i++) {
+        const entry = contents[i];
+        const role = entry.role === 'model' ? 'assistant' : 'user';
+        const text = (entry.parts || []).map(p => p.text).filter(Boolean).join(' ') || '';
+
+        if (i === lastIdx && images && images.length > 0) {
+            messages.push({
+                role: 'user',
+                content: [
+                    { type: 'text', text },
+                    ...images.map(url => ({ type: 'image_url', image_url: { url } }))
+                ]
+            });
+        } else {
+            messages.push({ role, content: text });
+        }
+    }
+    return messages;
+}
+
+async function openaiRequest(messages, tools, toolChoice) {
+    const baseOpts = {
+        model: config.openai.model,
+        messages
+    };
+    if (tools && tools.length > 0) {
+        baseOpts.tools = tools;
+        baseOpts.tool_choice = toolChoice || 'auto';
+    }
+    const opts = { ...baseOpts };
+    if (config.openai.reasoningEffort) opts.reasoning_effort = config.openai.reasoningEffort;
+    if (config.openai.verbosity) opts.verbosity = config.openai.verbosity;
+
+    try {
+        return await withTimeout(openai.chat.completions.create(opts));
+    } catch (err) {
+        const msg = err?.message || '';
+        if ((config.openai.reasoningEffort || config.openai.verbosity) &&
+            /reasoning|verbosity|unknown|invalid/i.test(msg)) {
+            openaiLog.warn(`OpenAI params rejected, retrying without reasoning/verbosity: ${msg}`);
+            return await withTimeout(openai.chat.completions.create(baseOpts));
+        }
+        throw err;
+    }
+}
+
+// ── OpenAI Provider (native tool calling) ──
+
+async function generateWithOpenAI(systemPrompt, contents, message, images = [], userTier = 3, userInput = '') {
+    if (!openai) throw new Error('OpenAI not configured');
+
     const selectedTools = selectToolsForMessage(userInput, userTier);
-    const groqTools = convertToolsForGroq(selectedTools);
+    const openaiTools = convertToolsForOpenAI(selectedTools);
     const toolChoice = detectToolChoice(userInput);
 
-    groqLog.info(`${selectedTools.length}/${toolDeclarations.length} tools, choice=${toolChoice}`);
+    const messages = buildOpenAIMessages(systemPrompt, contents, images);
 
     const toolLog = [];
     let rounds = 0;
-    let leakedRounds = 0;
     while (rounds <= config.maxToolRounds) {
-        // After first round, always use 'auto' (the model is responding to tool results)
         const currentChoice = rounds === 0 ? toolChoice : 'auto';
-        const completion = await groqRequest(messages, groqTools, currentChoice);
-        const choice = completion.choices[0];
-        const assistantMsg = choice.message;
+        const completion = await openaiRequest(messages, openaiTools, currentChoice);
+        const assistant = completion?.choices?.[0]?.message || {};
 
-        const content = assistantMsg.content || '';
-        const toolCalls = assistantMsg.tool_calls;
-        const hasRealToolCalls = toolCalls && toolCalls.length > 0;
+        messages.push({
+            role: assistant.role || 'assistant',
+            content: assistant.content ?? '',
+            tool_calls: assistant.tool_calls
+        });
 
-        // If no real tool calls but text contains leaked function syntax, try to parse & execute
-        if (!hasRealToolCalls && content) {
-            const leakedCalls = parseLeakedToolCalls(content);
-            if (leakedCalls.length > 0) {
-                leakedRounds++;
-                groqLog.warn(`Parsing ${leakedCalls.length} leaked tool call(s) (round ${leakedRounds})`);
-
-                // After 2 consecutive leaked rounds, fall back to Gemini
-                if (leakedRounds >= 2) {
-                    groqLog.warn('Too many leaked rounds, falling back to Gemini');
-                    // Still execute the leaked calls before falling back
-                    for (const lc of leakedCalls) {
-                        try {
-                            const toolResult = await executeTool(lc.name, lc.args, message);
-                            toolLog.push({ tool: lc.name, args: lc.args, result: toolResult });
-                        } catch (err) {
-                            toolLog.push({ tool: lc.name, args: lc.args, result: { error: err.message } });
-                        }
-                    }
-                    return { text: null, toolLog, fallbackToGemini: true };
-                }
-
-                const results = [];
-                for (const lc of leakedCalls) {
-                    groqLog.info(`Tool (leaked): ${lc.name}(${JSON.stringify(lc.args)})`);
-                    let toolResult;
-                    try {
-                        toolResult = await executeTool(lc.name, lc.args, message);
-                    } catch (err) {
-                        toolResult = { error: err.message };
-                    }
-                    toolLog.push({ tool: lc.name, args: lc.args, result: toolResult });
-                    results.push({ name: lc.name, result: toolResult });
-                }
-
-                const resultSummary = results.map(r => `${r.name}: ${JSON.stringify(r.result)}`).join('\n');
-                messages.push(assistantMsg);
-                messages.push({ role: 'user', content: `[SYSTEM] The tools were executed. Results:\n${resultSummary}\n\nGive a short in-character response (1-2 sentences, no function calls).` });
-                rounds++;
-                continue;
-            }
-        }
-
-        // Reset leaked counter on successful real tool calls
-        if (hasRealToolCalls) leakedRounds = 0;
-
-        messages.push(assistantMsg);
-
-        if (!hasRealToolCalls) {
-            return { text: content.trim() || null, toolLog };
+        const toolCalls = assistant.tool_calls;
+        if (!toolCalls || toolCalls.length === 0) {
+            return { text: assistant.content?.trim() || null, toolLog };
         }
 
         for (const tc of toolCalls) {
-            const name = tc.function.name;
+            const name = tc.function?.name;
             let args = {};
-            try { args = JSON.parse(tc.function.arguments || '{}'); } catch (_) {}
-            groqLog.info(`Tool: ${name}(${JSON.stringify(args)})`);
+            try { args = JSON.parse(tc.function?.arguments || '{}'); } catch (_) {}
+            openaiLog.info(`Tool: ${name}(${JSON.stringify(args)})`);
 
             let toolResult;
             try {
@@ -400,211 +501,86 @@ async function generateWithGroq(systemPrompt, contents, message, userTier, userI
         rounds++;
     }
 
-    const final = await groqRequest(messages, null, null);
-    return { text: final.choices[0]?.message?.content?.trim() || null, toolLog };
+    const final = await openaiRequest(messages, null, null);
+    const finalText = final?.choices?.[0]?.message?.content?.trim() || null;
+    return { text: finalText, toolLog };
 }
 
-// ── Groq Vision (llama-4-scout, no tools) ──
+// ── Gemma Provider (text-only tools) ──
 
-async function generateWithGroqVision(systemPrompt, contents, images) {
-    const messages = [{ role: 'system', content: systemPrompt }];
-    for (const entry of contents.slice(0, -1)) {
-        const text = entry.parts?.[0]?.text || '';
-        messages.push({ role: entry.role === 'model' ? 'assistant' : 'user', content: text });
-    }
+async function generateWithGemma(systemPrompt, contents, message, images = [], userTier = 3, userInput = '') {
+    if (!genAI) throw new Error('Gemma not configured');
 
-    // Last message with images in OpenAI vision format
-    const lastEntry = contents[contents.length - 1];
-    const userText = lastEntry.parts?.[0]?.text || '';
-    const userContent = [
-        { type: 'text', text: userText },
-        ...images.map(url => ({ type: 'image_url', image_url: { url } }))
-    ];
-    messages.push({ role: 'user', content: userContent });
-
-    const visionModel = 'meta-llama/llama-4-scout-17b-16e-instruct';
-    try {
-        const completion = await withTimeout(groq.chat.completions.create({
-            model: visionModel,
-            messages
-        }));
-        const text = completion.choices[0]?.message?.content?.trim() || null;
-        log.info(`Vision response via Groq (${visionModel})`);
-        return { text, toolLog: [] };
-    } catch (err) {
-        groqLog.error('Vision failed:', err.message);
-        throw err;
-    }
-}
-
-// Parse function calls that leaked into text content
-function parseLeakedToolCalls(text) {
-    const calls = [];
-    const toolNames = new Set(toolDeclarations.map(t => t.name));
-
-    // Pattern: toolName:N<|tool_call_argument_begin|>{"arg":"val"} (kimi-k2 leaked format)
-    const pattern0 = /(\w+):\d+<\|tool_call_argument_begin\|>/gi;
-    for (const match of text.matchAll(pattern0)) {
-        if (toolNames.has(match[1])) {
-            const jsonStr = extractJSON(text, match.index + match[0].length);
-            if (jsonStr) {
-                try { calls.push({ name: match[1], args: JSON.parse(jsonStr) }); } catch (_) {}
-            }
-        }
-    }
-
-    // Pattern: <|tool_call_begin|>...<|tool_call_argument_begin|>{"arg":"val"}
-    if (calls.length === 0) {
-        const pattern0b = /<\|tool_call_begin\|>.*?(\w+).*?<\|tool_call_argument_begin\|>/gi;
-        for (const match of text.matchAll(pattern0b)) {
-            if (toolNames.has(match[1])) {
-                const jsonStr = extractJSON(text, match.index + match[0].length);
-                if (jsonStr) {
-                    try { calls.push({ name: match[1], args: JSON.parse(jsonStr) }); } catch (_) {}
-                }
-            }
-        }
-    }
-
-    // Pattern: function=toolName>{"arg":"val"} or <function=toolName>{"arg":"val"}</function>
-    if (calls.length === 0) {
-        const pattern1 = /(?:<)?function=(\w+)>/gi;
-        for (const match of text.matchAll(pattern1)) {
-            if (toolNames.has(match[1])) {
-                const jsonStr = extractJSON(text, match.index + match[0].length);
-                if (jsonStr) {
-                    try { calls.push({ name: match[1], args: JSON.parse(jsonStr) }); } catch (_) {}
-                }
-            }
-        }
-    }
-
-    // Pattern: toolName({"arg":"val"})
-    if (calls.length === 0) {
-        const pattern2 = /\b(\w+)\(/g;
-        for (const match of text.matchAll(pattern2)) {
-            if (toolNames.has(match[1])) {
-                const jsonStr = extractJSON(text, match.index + match[0].length);
-                if (jsonStr) {
-                    try { calls.push({ name: match[1], args: JSON.parse(jsonStr) }); } catch (_) {}
-                }
-            }
-        }
-    }
-
-    return calls;
-}
-
-// ── Gemini Provider (FALLBACK — native function calling) ──
-
-async function generateWithGemini(systemPrompt, contents, message, images = [], userTier = 3, userInput = '') {
-    const models = config.gemini.models || [config.gemini.model || 'gemini-2.0-flash'];
-
-    // Dynamic tool selection for Gemini too
     const selectedTools = selectToolsForMessage(userInput, userTier);
     const toolChoice = detectToolChoice(userInput);
+    const nonce = crypto.randomBytes(3).toString('hex');
+    const toolPrompt = buildToolPrompt(selectedTools, toolChoice, nonce);
 
-    // If images present, add inlineData parts to the last user message
-    if (images.length > 0) {
-        const lastMsg = contents[contents.length - 1];
-        const imageParts = [];
-        const MAX_IMAGE_BYTES = 10 * 1024 * 1024; // 10MB
-        for (const url of images) {
-            try {
-                const res = await fetch(url);
-                const contentLength = parseInt(res.headers.get('content-length') || '0', 10);
-                if (contentLength > MAX_IMAGE_BYTES) {
-                    geminiLog.warn(`Skipping image (${Math.round(contentLength / 1024 / 1024)}MB exceeds 10MB limit): ${url}`);
-                    continue;
-                }
-                const chunks = [];
-                let totalBytes = 0;
-                for await (const chunk of res.body) {
-                    totalBytes += chunk.length;
-                    if (totalBytes > MAX_IMAGE_BYTES) {
-                        geminiLog.warn(`Skipping image (stream exceeded 10MB limit): ${url}`);
-                        break;
-                    }
-                    chunks.push(chunk);
-                }
-                if (totalBytes > MAX_IMAGE_BYTES) continue;
-                const buffer = Buffer.concat(chunks);
-                const mimeType = res.headers.get('content-type') || 'image/jpeg';
-                imageParts.push({ inlineData: { mimeType, data: buffer.toString('base64') } });
-            } catch (err) {
-                geminiLog.error('Failed to fetch image:', err.message);
-            }
-        }
-        if (imageParts.length > 0) {
-            lastMsg.parts = [...lastMsg.parts, ...imageParts];
-        }
+    const working = contents.map(entry => ({ role: entry.role, parts: [...entry.parts] }));
+    if (toolPrompt) {
+        working.splice(working.length - 1, 0,
+            { role: 'user', parts: [{ text: toolPrompt }] },
+            { role: 'model', parts: [{ text: 'Acknowledged.' }] }
+        );
     }
 
-    // Try each model until one works
-    for (let i = 0; i < models.length; i++) {
-        const modelIdx = (activeGeminiModelIdx + i) % models.length;
-        const modelName = models[modelIdx];
-        try {
-            const modelConfig = {
-                model: modelName,
-                systemInstruction: systemPrompt,
-                tools: [{ functionDeclarations: selectedTools }]
-            };
+    if (images.length > 0) {
+        await attachImagesToLastMessage(working, images);
+    }
 
-            // Set tool config for Gemini based on detected choice
-            if (toolChoice === 'required') {
-                modelConfig.toolConfig = { functionCallingConfig: { mode: 'ANY' } };
-            }
+    const model = genAI.getGenerativeModel({
+        model: config.ai.model,
+        systemInstruction: systemPrompt,
+        generationConfig: buildGenerationConfig()
+    });
 
-            const model = genAI.getGenerativeModel(modelConfig);
+    const toolLog = [];
+    let rounds = 0;
+    let forcedRetry = false;
+    while (rounds <= config.maxToolRounds) {
+        const result = await withTimeout(model.generateContent({ contents: working }));
+        const text = result?.response?.text?.() || '';
+        const content = text.trim();
+        if (!content) return { text: null, toolLog };
 
-            const chat = model.startChat({ contents: contents.slice(0, -1) });
-            let result = await withTimeout(chat.sendMessage(contents[contents.length - 1].parts));
-
-            const toolLog = [];
-            let rounds = 0;
-            while (rounds < config.maxToolRounds) {
-                const functionCalls = result.response.functionCalls();
-                if (!functionCalls || functionCalls.length === 0) break;
-
-                const functionResponses = [];
-                for (const fc of functionCalls) {
-                    geminiLog.info(`Tool: ${fc.name}(${JSON.stringify(fc.args)})`);
-                    let toolResult;
-                    try {
-                        toolResult = await executeTool(fc.name, fc.args, message);
-                    } catch (err) {
-                        toolResult = { error: err.message };
-                    }
-                    toolLog.push({ tool: fc.name, args: fc.args, result: toolResult });
-                    functionResponses.push({
-                        functionResponse: { name: fc.name, response: toolResult }
-                    });
-                }
-
-                result = await withTimeout(chat.sendMessage(functionResponses));
+        const leakedCalls = parseLeakedToolCalls(content, nonce);
+        if (leakedCalls.length === 0) {
+            if (toolChoice === 'required' && !forcedRetry) {
+                forcedRetry = true;
+                working.push({ role: 'model', parts: [{ text: content }] });
+                working.push({
+                    role: 'user',
+                    parts: [{ text: `[SYSTEM] A tool call is required. Output ONLY tool call lines using the exact format: function=toolName>{JSON} #nonce:${nonce}. No other text.` }]
+                });
                 rounds++;
-            }
-
-            if (modelIdx !== activeGeminiModelIdx) {
-                activeGeminiModelIdx = modelIdx;
-                geminiLog.info(`Switched to ${modelName}`);
-            }
-
-            const text = result.response.text()?.trim() || null;
-            return { text, toolLog };
-        } catch (err) {
-            if (err.status === 429 || err.message?.includes('429') || err.message?.includes('Resource has been exhausted')) {
-                const delay = Math.min(1000 * Math.pow(2, i), 16000);
-                geminiLog.warn(`${modelName} rate limited, waiting ${delay}ms before next model...`);
-                await new Promise(r => setTimeout(r, delay));
                 continue;
             }
-            throw err;
+            return { text: content, toolLog };
         }
+
+        const results = [];
+        for (const lc of leakedCalls) {
+            gemmaLog.info(`Tool (text): ${lc.name}(${JSON.stringify(lc.args)})`);
+            let toolResult;
+            try {
+                toolResult = await executeTool(lc.name, lc.args, message);
+            } catch (err) {
+                toolResult = { error: err.message };
+            }
+            toolLog.push({ tool: lc.name, args: lc.args, result: toolResult });
+            results.push({ name: lc.name, result: toolResult });
+        }
+
+        const resultSummary = results.map(r => `${r.name}: ${JSON.stringify(r.result)}`).join('\n');
+        working.push({ role: 'model', parts: [{ text: content }] });
+        working.push({
+            role: 'user',
+            parts: [{ text: `[SYSTEM] The tools were executed. Results:\n${resultSummary}\n\nIf further actions are required, output another tool call line. Otherwise reply to the user in 1-2 sentences with no tool calls.` }]
+        });
+        rounds++;
     }
 
-    throw Object.assign(new Error('All Gemini models rate limited'), { status: 429 });
+    return { text: null, toolLog };
 }
 
 // ── Main Entry ──
@@ -650,36 +626,22 @@ async function generateResponse(message, userInput, images = []) {
     contents.push({ role: 'user', parts: [{ text: `[${userName}]: ${userInput}` }] });
 
     let result = null;
-    const hasImages = images.length > 0;
 
-    // Try Groq first (native function calling), fall back to Gemini
-    if (groq) {
+    if (openai) {
         try {
-            if (hasImages) {
-                // Vision: use llama-4-scout directly, no tools
-                result = await generateWithGroqVision(systemPrompt, contents, images);
-            } else {
-                result = await generateWithGroq(systemPrompt, contents, message, userTier, userInput);
-            }
-            if (result?.text) log.info(`Response via Groq (${hasImages ? 'vision' : getGroqModel()})`);
+            result = await generateWithOpenAI(systemPrompt, contents, message, images, userTier, userInput);
+            if (result?.text) openaiLog.info(`Response via OpenAI (${config.openai.model})`);
         } catch (err) {
-            log.error('Groq failed:', err.message);
-            if (hasImages) log.info('Vision request — falling back to Gemini');
+            log.error('OpenAI failed:', err.message);
         }
     }
 
-    // Gemini fallback — either Groq failed or leaked too many times
-    if (!result?.text || result?.fallbackToGemini) {
-        const existingToolLog = result?.toolLog || [];
+    if (!result?.text) {
         try {
-            result = await generateWithGemini(systemPrompt, contents, message, images, userTier, userInput);
-            if (result?.text) log.info('Response via Gemini');
-            // Merge tool logs from leaked Groq calls + Gemini calls
-            result.toolLog = [...existingToolLog, ...(result.toolLog || [])];
+            result = await generateWithGemma(systemPrompt, contents, message, images, userTier, userInput);
+            if (result?.text) gemmaLog.info(`Response via Gemma (${config.ai.model})`);
         } catch (err) {
-            log.error('Gemini failed:', err.message);
-            // Preserve any tool log from Groq leaked calls
-            if (!result) result = { text: null, toolLog: existingToolLog };
+            log.error('Gemma failed:', err.message);
         }
     }
 

@@ -147,17 +147,6 @@ const commands = [
                         .setDescription('The wakeword to trigger Ultron (2-20 characters)')
                         .setRequired(true)
                 )
-        )
-        .addSubcommand(sub =>
-            sub.setName('cooldown')
-                .setDescription('Set the cooldown between messages (seconds)')
-                .addIntegerOption(opt =>
-                    opt.setName('seconds')
-                        .setDescription('Cooldown in seconds (1-30)')
-                        .setRequired(true)
-                        .setMinValue(1)
-                        .setMaxValue(30)
-                )
         ),
 
     new SlashCommandBuilder()
