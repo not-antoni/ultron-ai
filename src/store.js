@@ -12,6 +12,15 @@ db.pragma('journal_mode = WAL');
 db.pragma('busy_timeout = 5000');
 db.pragma('foreign_keys = ON');
 
+const triggerKeyColumn = (() => {
+    try {
+        const cols = db.prepare("PRAGMA table_info(guild_snapshot_automod_trigger_items)").all().map(c => c.name);
+        if (cols.includes('trigger_key')) return 'trigger_key';
+        if (cols.includes('key')) return 'key';
+    } catch (_) {}
+    return 'trigger_key';
+})();
+
 db.exec(`
     CREATE TABLE IF NOT EXISTS guild_config (
         guild_id TEXT PRIMARY KEY,
@@ -1005,7 +1014,7 @@ const insertSnapshotTx = db.transaction(snapshot => {
 
     const insertAutomodTriggerItem = stmt('insert_snapshot_automod_trigger_item',
         `INSERT INTO guild_snapshot_automod_trigger_items
-         (snapshot_id, rule_id, trigger_key, item_index, value)
+         (snapshot_id, rule_id, ${triggerKeyColumn}, item_index, value)
          VALUES (?, ?, ?, ?, ?)`
     );
     for (const item of snapshot.automodTriggerItems || []) {
@@ -1082,10 +1091,7 @@ function createGuildSnapshot(snapshot) {
     return insertSnapshotTx(snapshot);
 }
 
-function getLatestGuildSnapshot(guildId) {
-    const row = stmt('latest_snapshot',
-        'SELECT * FROM guild_snapshots WHERE guild_id = ? ORDER BY id DESC LIMIT 1'
-    ).get(guildId);
+function hydrateSnapshot(row) {
     if (!row) return null;
 
     const channels = stmt('snapshot_channels',
@@ -1291,7 +1297,7 @@ function getLatestGuildSnapshot(guildId) {
         })),
         automodTriggerItems: automodTriggerItems.map(i => ({
             ruleId: i.rule_id,
-            key: i.trigger_key,
+            key: i.trigger_key || i.key,
             index: i.item_index,
             value: i.value
         })),
@@ -1340,6 +1346,26 @@ function getLatestGuildSnapshot(guildId) {
     };
 }
 
+function getLatestGuildSnapshot(guildId) {
+    const row = stmt('latest_snapshot',
+        'SELECT * FROM guild_snapshots WHERE guild_id = ? ORDER BY id DESC LIMIT 1'
+    ).get(guildId);
+    return hydrateSnapshot(row);
+}
+
+function getSnapshotById(snapshotId) {
+    const row = stmt('snapshot_by_id',
+        'SELECT * FROM guild_snapshots WHERE id = ?'
+    ).get(snapshotId);
+    return hydrateSnapshot(row);
+}
+
+function listGuildSnapshots(guildId, limit = 5) {
+    return stmt('list_snapshots',
+        'SELECT id, created_at, name, member_count, channel_count, role_count, emoji_count FROM guild_snapshots WHERE guild_id = ? ORDER BY id DESC LIMIT ?'
+    ).all(guildId, limit);
+}
+
 function pruneGuildSnapshots(guildId, keep = 10) {
     if (keep <= 0) return 0;
     const threshold = stmt('snapshot_prune_threshold',
@@ -1370,7 +1396,7 @@ module.exports = {
     read, write, update, cleanupConversations,
     logAudit, getAuditTrail,
     addTempBan, getExpiredTempBans, removeTempBan,
-    createGuildSnapshot, getLatestGuildSnapshot, pruneGuildSnapshots,
+    createGuildSnapshot, getLatestGuildSnapshot, getSnapshotById, listGuildSnapshots, pruneGuildSnapshots,
     logSecurityEvent,
     close
 };

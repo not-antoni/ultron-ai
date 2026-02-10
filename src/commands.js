@@ -181,6 +181,46 @@ const commands = [
         .setDescription('Show Ultron help and capabilities'),
 
     new SlashCommandBuilder()
+        .setName('snapshots')
+        .setDescription('List or create server snapshots')
+        .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
+        .addSubcommand(sub =>
+            sub.setName('list')
+                .setDescription('List recent snapshots for this server')
+                .addIntegerOption(opt =>
+                    opt.setName('limit')
+                        .setDescription('How many snapshots to show (1-10)')
+                        .setRequired(false)
+                )
+        )
+        .addSubcommand(sub =>
+            sub.setName('take')
+                .setDescription('Force a new snapshot now')
+        ),
+
+    new SlashCommandBuilder()
+        .setName('restore')
+        .setDescription('Restore server state from a snapshot')
+        .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
+        .addIntegerOption(opt =>
+            opt.setName('snapshot_id')
+                .setDescription('Snapshot ID to restore')
+                .setRequired(true)
+        )
+        .addStringOption(opt =>
+            opt.setName('scope')
+                .setDescription('What to restore')
+                .setRequired(false)
+                .addChoices(
+                    { name: 'critical (rules/announcements)', value: 'critical' },
+                    { name: 'channels', value: 'channels' },
+                    { name: 'roles', value: 'roles' },
+                    { name: 'overwrites', value: 'overwrites' },
+                    { name: 'all', value: 'all' }
+                )
+        ),
+
+    new SlashCommandBuilder()
         .setName('clear')
         .setDescription('Clear your conversation history with Ultron')
 ];

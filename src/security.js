@@ -188,6 +188,159 @@ async function ensureCriticalChannels(guild, reason, snapshot = null) {
     return results;
 }
 
+function normalizeScope(scope) {
+    const value = String(scope || '').toLowerCase();
+    if (value === 'all') return 'all';
+    if (value === 'channels') return 'channels';
+    if (value === 'roles') return 'roles';
+    if (value === 'overwrites') return 'overwrites';
+    return 'critical';
+}
+
+async function restoreChannels(guild, snapshot) {
+    const results = { updated: 0, failed: 0 };
+    const channelMap = new Map();
+    for (const [, ch] of guild.channels.cache) {
+        channelMap.set(ch.id, ch);
+    }
+
+    for (const snap of snapshot.channels || []) {
+        const channel = channelMap.get(snap.id);
+        if (!channel) continue;
+
+        const updates = {};
+        if (snap.name && channel.name !== snap.name) updates.name = snap.name;
+        if (snap.parentId !== undefined && channel.parentId !== snap.parentId) updates.parent = snap.parentId || null;
+        if (snap.position !== undefined && snap.position !== null && channel.position !== snap.position) updates.position = snap.position;
+
+        const type = channel.type;
+        const isText = [ChannelType.GuildText, ChannelType.GuildAnnouncement, ChannelType.GuildForum, ChannelType.GuildMedia].includes(type);
+        const isVoice = [ChannelType.GuildVoice, ChannelType.GuildStageVoice].includes(type);
+
+        if (isText) {
+            if (snap.topic !== undefined && channel.topic !== snap.topic) updates.topic = snap.topic || null;
+            if (snap.nsfw !== undefined && channel.nsfw !== snap.nsfw) updates.nsfw = !!snap.nsfw;
+            if (snap.rateLimitPerUser !== undefined && channel.rateLimitPerUser !== snap.rateLimitPerUser) {
+                updates.rateLimitPerUser = snap.rateLimitPerUser ?? 0;
+            }
+            if (snap.defaultAutoArchiveDuration !== undefined &&
+                channel.defaultAutoArchiveDuration !== snap.defaultAutoArchiveDuration) {
+                updates.defaultAutoArchiveDuration = snap.defaultAutoArchiveDuration ?? null;
+            }
+        } else if (isVoice) {
+            if (snap.bitrate !== undefined && channel.bitrate !== snap.bitrate) updates.bitrate = snap.bitrate ?? null;
+            if (snap.userLimit !== undefined && channel.userLimit !== snap.userLimit) updates.userLimit = snap.userLimit ?? null;
+            if (snap.rtcRegion !== undefined && channel.rtcRegion !== snap.rtcRegion) updates.rtcRegion = snap.rtcRegion || null;
+        }
+
+        if (Object.keys(updates).length === 0) continue;
+
+        try {
+            await channel.edit(updates, { reason: 'Ultron restore: channel settings' });
+            results.updated += 1;
+        } catch (_) {
+            results.failed += 1;
+        }
+    }
+
+    return results;
+}
+
+async function restoreOverwrites(guild, snapshot) {
+    const results = { updated: 0, failed: 0 };
+    const overwritesByChannel = new Map();
+    for (const ow of snapshot.overwrites || []) {
+        if (!overwritesByChannel.has(ow.channelId)) overwritesByChannel.set(ow.channelId, []);
+        overwritesByChannel.get(ow.channelId).push(ow);
+    }
+
+    for (const [channelId, list] of overwritesByChannel) {
+        const channel = guild.channels.cache.get(channelId);
+        if (!channel) continue;
+        const mapped = list.map(ow => ({
+            id: ow.targetId,
+            type: ow.targetType === 'member' ? OverwriteType.Member : OverwriteType.Role,
+            allow: ow.allow ? BigInt(ow.allow) : 0n,
+            deny: ow.deny ? BigInt(ow.deny) : 0n
+        }));
+
+        try {
+            await channel.permissionOverwrites.set(mapped, `Ultron restore: overwrites`);
+            results.updated += 1;
+        } catch (_) {
+            results.failed += 1;
+        }
+    }
+
+    return results;
+}
+
+async function restoreRoles(guild, snapshot) {
+    const results = { updated: 0, failed: 0 };
+    const roleMap = new Map();
+    for (const [, role] of guild.roles.cache) roleMap.set(role.id, role);
+
+    for (const snap of snapshot.roles || []) {
+        const role = roleMap.get(snap.id);
+        if (!role || role.managed) continue;
+
+        const updates = {};
+        if (snap.name && role.name !== snap.name) updates.name = snap.name;
+        if (snap.color !== undefined && role.color !== snap.color) updates.color = snap.color ?? null;
+        if (snap.permissions && role.permissions?.bitfield?.toString?.() !== snap.permissions) {
+            try { updates.permissions = BigInt(snap.permissions); } catch (_) {}
+        }
+        if (snap.hoist !== undefined && role.hoist !== snap.hoist) updates.hoist = !!snap.hoist;
+        if (snap.mentionable !== undefined && role.mentionable !== snap.mentionable) updates.mentionable = !!snap.mentionable;
+        if (snap.unicodeEmoji !== undefined && role.unicodeEmoji !== snap.unicodeEmoji) updates.unicodeEmoji = snap.unicodeEmoji || null;
+
+        if (Object.keys(updates).length === 0) continue;
+
+        try {
+            await role.edit(updates, 'Ultron restore: role settings');
+            results.updated += 1;
+        } catch (_) {
+            results.failed += 1;
+        }
+    }
+
+    return results;
+}
+
+async function forceSnapshot(guild) {
+    const current = await buildSnapshot(guild);
+    const snapshotId = store.createGuildSnapshot(current);
+    store.pruneGuildSnapshots(guild.id, SNAPSHOT_RETENTION);
+    snapshotCache.set(guild.id, current);
+    baselineReady.add(guild.id);
+    return { snapshotId, snapshot: current };
+}
+
+async function restoreSnapshot(guild, snapshot, scope = 'critical') {
+    const normalized = normalizeScope(scope);
+    const results = {
+        critical: [],
+        channels: null,
+        roles: null,
+        overwrites: null
+    };
+
+    if (normalized === 'critical' || normalized === 'all') {
+        results.critical = await ensureCriticalChannels(guild, 'manual-restore', snapshot);
+    }
+    if (normalized === 'channels' || normalized === 'all') {
+        results.channels = await restoreChannels(guild, snapshot);
+    }
+    if (normalized === 'roles' || normalized === 'all') {
+        results.roles = await restoreRoles(guild, snapshot);
+    }
+    if (normalized === 'overwrites' || normalized === 'all') {
+        results.overwrites = await restoreOverwrites(guild, snapshot);
+    }
+
+    return results;
+}
+
 async function fetchLatestAuditEntry(guild, type) {
     try {
         const me = guild.members.me || guild.members.cache.get(guild.client.user.id);
@@ -1304,6 +1457,8 @@ async function handleGuildBanAdd(ban) {
 
 module.exports = {
     startSecurityMonitor,
+    forceSnapshot,
+    restoreSnapshot,
     handleMemberJoin,
     handleChannelCreate,
     handleChannelDelete,

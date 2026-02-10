@@ -1,6 +1,7 @@
 const { EmbedBuilder, ActivityType } = require('discord.js');
 const { generateResponse } = require('./ai');
 const { processMessage, getFilters, addFilter, removeFilter, testMessage } = require('./filters');
+const { forceSnapshot, restoreSnapshot } = require('./security');
 const store = require('./store');
 const config = require('../config');
 const { createLogger } = require('./logger');
@@ -50,6 +51,15 @@ setInterval(() => {
         if (now - ts > 60000) cooldowns.delete(id);
     }
 }, 5 * 60 * 1000);
+
+function isTrustedAdmin(interaction) {
+    if (!interaction.guild) return false;
+    if (interaction.user.id === interaction.guild.ownerId) return true;
+    if (config.adminUserId && interaction.user.id === config.adminUserId) return true;
+    const cfg = store.read(`guild-${interaction.guild.id}.json`, {});
+    const admins = cfg?.botAdmins || [];
+    return admins.includes(interaction.user.id);
+}
 
 // ── Event Handlers ──
 
@@ -443,6 +453,8 @@ Or just say "ultron" followed by your message
 \`/setup autorole\` — Auto-assign a role to new members
 \`/setup wakeword\` — Set a custom wakeword for Ultron
 \`/admin add/remove/list\` — Manage bot admin users
+\`/snapshots list/take\` — View or force server snapshots (owner/bot admin)
+\`/restore\` — Restore from a snapshot (owner/bot admin)
 
 **Other:**
 \`/help\` — This message
@@ -456,6 +468,97 @@ Or just say "ultron" followed by your message
 - **Admin** — Destructive actions (kick, ban, delete, server settings)`;
 
         await interaction.reply({ content: helpText, flags: 64 });
+        return;
+    }
+
+    if (commandName === 'snapshots') {
+        if (!interaction.guild) {
+            await interaction.reply({ content: 'Snapshots require a server context.', flags: 64 });
+            return;
+        }
+        if (!isTrustedAdmin(interaction)) {
+            await interaction.reply({ content: 'Only the server owner or trusted bot admins can manage snapshots.', flags: 64 });
+            return;
+        }
+
+        const sub = interaction.options.getSubcommand();
+        if (sub === 'list') {
+            let limit = interaction.options.getInteger('limit') || 5;
+            if (limit < 1) limit = 1;
+            if (limit > 10) limit = 10;
+            const rows = store.listGuildSnapshots(interaction.guild.id, limit);
+            if (!rows || rows.length === 0) {
+                await interaction.reply({ content: 'No snapshots stored for this server yet.', flags: 64 });
+                return;
+            }
+            const lines = rows.map(r =>
+                `#${r.id} | ${r.created_at} | members:${r.member_count ?? '?'} channels:${r.channel_count ?? '?'} roles:${r.role_count ?? '?'} emojis:${r.emoji_count ?? '?'}`
+            );
+            await interaction.reply({ content: lines.join('\n'), flags: 64 });
+            return;
+        }
+
+        if (sub === 'take') {
+            await interaction.deferReply({ flags: 64 });
+            try {
+                const result = await forceSnapshot(interaction.guild);
+                const snap = result.snapshot || {};
+                const line = `Snapshot #${result.snapshotId} created. members:${snap.memberCount ?? '?'} channels:${snap.channelCount ?? '?'} roles:${snap.roleCount ?? '?'} emojis:${snap.emojiCount ?? '?'}`;
+                await interaction.editReply({ content: line });
+            } catch (err) {
+                log.error('Snapshot take failed:', err.message);
+                await interaction.editReply({ content: 'Snapshot failed. Check bot permissions and try again.' });
+            }
+            return;
+        }
+    }
+
+    if (commandName === 'restore') {
+        if (!interaction.guild) {
+            await interaction.reply({ content: 'Restore requires a server context.', flags: 64 });
+            return;
+        }
+        if (!isTrustedAdmin(interaction)) {
+            await interaction.reply({ content: 'Only the server owner or trusted bot admins can restore snapshots.', flags: 64 });
+            return;
+        }
+
+        const snapshotId = interaction.options.getInteger('snapshot_id');
+        const scope = interaction.options.getString('scope') || 'critical';
+        const snapshot = store.getSnapshotById(snapshotId);
+        if (!snapshot) {
+            await interaction.reply({ content: `Snapshot #${snapshotId} not found.`, flags: 64 });
+            return;
+        }
+        if (snapshot.guildId !== interaction.guild.id) {
+            await interaction.reply({ content: `Snapshot #${snapshotId} does not belong to this server.`, flags: 64 });
+            return;
+        }
+
+        await interaction.deferReply({ flags: 64 });
+        try {
+            const result = await restoreSnapshot(interaction.guild, snapshot, scope);
+            const lines = [];
+            lines.push(`Restored from snapshot #${snapshotId} (scope: ${scope}).`);
+            if (result.critical && result.critical.length > 0) {
+                lines.push(`Critical: ${result.critical.join(' | ')}`);
+            } else if (scope === 'critical' || scope === 'all') {
+                lines.push('Critical: ok.');
+            }
+            if (result.channels) {
+                lines.push(`Channels updated: ${result.channels.updated}, failed: ${result.channels.failed}.`);
+            }
+            if (result.roles) {
+                lines.push(`Roles updated: ${result.roles.updated}, failed: ${result.roles.failed}.`);
+            }
+            if (result.overwrites) {
+                lines.push(`Overwrites updated: ${result.overwrites.updated}, failed: ${result.overwrites.failed}.`);
+            }
+            await interaction.editReply({ content: lines.join('\n') });
+        } catch (err) {
+            log.error('Restore failed:', err.message);
+            await interaction.editReply({ content: 'Restore failed. Check bot permissions and snapshot validity.' });
+        }
         return;
     }
 
