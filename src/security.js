@@ -315,7 +315,9 @@ async function restoreRoles(guild, snapshot) {
 
         const updates = {};
         if (snap.name && role.name !== snap.name) updates.name = snap.name;
-        if (snap.color !== undefined && role.color !== snap.color) updates.color = snap.color ?? null;
+        if (snap.color !== undefined && snap.color !== null && role.color !== snap.color) {
+            updates.colors = { primaryColor: snap.color };
+        }
         if (snap.permissions && role.permissions?.bitfield?.toString?.() !== snap.permissions) {
             try { updates.permissions = BigInt(snap.permissions); } catch (_) {}
         }
@@ -522,7 +524,9 @@ async function syncRolesFull(guild, snapshot) {
             if (!role.managed) {
                 const updates = {};
                 if (snap.name && role.name !== snap.name) updates.name = snap.name;
-                if (snap.color !== undefined && role.color !== snap.color) updates.color = snap.color ?? null;
+                if (snap.color !== undefined && snap.color !== null && role.color !== snap.color) {
+                    updates.colors = { primaryColor: snap.color };
+                }
                 if (snap.permissions && role.permissions?.bitfield?.toString?.() !== snap.permissions) {
                     try { updates.permissions = BigInt(snap.permissions); } catch (_) {}
                 }
@@ -550,10 +554,12 @@ async function syncRolesFull(guild, snapshot) {
         }
         const createPayload = {
             name: snap.name,
-            color: snap.color ?? undefined,
             hoist: !!snap.hoist,
             mentionable: !!snap.mentionable
         };
+        if (snap.color !== undefined && snap.color !== null) {
+            createPayload.colors = { primaryColor: snap.color };
+        }
         if (snap.permissions) {
             try { createPayload.permissions = BigInt(snap.permissions); } catch (_) {}
         }
