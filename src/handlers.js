@@ -109,9 +109,6 @@ async function handleMessageCreate(message, client) {
     if (message.author.bot) return;
     if (!message.guild) return;
 
-    // Mark as processed BEFORE the check to prevent race conditions
-    markProcessed(message.id);
-
     // Skip already-processed messages (prevents double responses on edits)
     if (wasAlreadyProcessed(message.id)) return;
 
@@ -132,6 +129,9 @@ async function handleMessageCreate(message, client) {
     const hasWakeword = wakewordRegex.test(content);
 
     if (!isMentioned && !hasWakeword) return;
+
+    // Mark as processed AFTER confirming this message will get a response (prevents race on edits)
+    markProcessed(message.id);
 
     // Cooldown check — brief feedback, auto-delete after 3s
     if (isOnCooldown(message.author.id, message.guild.id)) {
