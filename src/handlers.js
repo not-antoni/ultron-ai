@@ -7,6 +7,11 @@ const config = require('../config');
 const { createLogger } = require('./logger');
 const log = createLogger('Ultron');
 
+// ── Image Limits ──
+
+const MAX_IMAGES = 4;
+const MAX_IMAGE_SIZE_MB = 5;
+
 // ── Message Deduplication (prevents double responses on edits) ──
 
 const processedMessages = new Map();
@@ -34,14 +39,16 @@ const cooldowns = new Map();
 const DEFAULT_COOLDOWN_MS = 5000;
 const GLOBAL_COOLDOWN_MS = Number.isFinite(config.cooldownMs) ? config.cooldownMs : DEFAULT_COOLDOWN_MS;
 
-function isOnCooldown(userId) {
-    const last = cooldowns.get(userId);
+function isOnCooldown(userId, guildId) {
+    const key = guildId ? `${guildId}:${userId}` : userId;
+    const last = cooldowns.get(key);
     if (!last) return false;
     return Date.now() - last < GLOBAL_COOLDOWN_MS;
 }
 
-function setCooldown(userId) {
-    cooldowns.set(userId, Date.now());
+function setCooldown(userId, guildId) {
+    const key = guildId ? `${guildId}:${userId}` : userId;
+    cooldowns.set(key, Date.now());
 }
 
 // Periodically prune expired cooldowns (every 5 minutes)
@@ -102,6 +109,9 @@ async function handleMessageCreate(message, client) {
     if (message.author.bot) return;
     if (!message.guild) return;
 
+    // Mark as processed BEFORE the check to prevent race conditions
+    markProcessed(message.id);
+
     // Skip already-processed messages (prevents double responses on edits)
     if (wasAlreadyProcessed(message.id)) return;
 
@@ -124,7 +134,7 @@ async function handleMessageCreate(message, client) {
     if (!isMentioned && !hasWakeword) return;
 
     // Cooldown check — brief feedback, auto-delete after 3s
-    if (isOnCooldown(message.author.id)) {
+    if (isOnCooldown(message.author.id, message.guild.id)) {
         const reply = await message.reply({
             content: 'Patience. I do not repeat myself for impatient minds.',
             allowedMentions: { parse: [] }
@@ -150,28 +160,32 @@ async function handleMessageCreate(message, client) {
 
     // Extract image URLs from attachments, embeds, and stickers
     const images = [];
+    const maxSizeBytes = MAX_IMAGE_SIZE_MB * 1024 * 1024;
     if (message.attachments.size > 0) {
         for (const [, attachment] of message.attachments) {
+            if (images.length >= MAX_IMAGES) break;
             const isImage = attachment.contentType?.startsWith('image/');
             const name = String(attachment.name || attachment.url || '').toLowerCase();
             const looksLikeImage = /\.(png|jpe?g|gif|webp|bmp)$/i.test(name);
-            if (isImage || looksLikeImage) images.push(attachment.url);
+            const sizeOk = attachment.size <= maxSizeBytes;
+            if ((isImage || looksLikeImage) && sizeOk) images.push(attachment.url);
         }
     }
-    if (message.embeds.length > 0) {
+    if (message.embeds.length > 0 && images.length < MAX_IMAGES) {
         for (const embed of message.embeds) {
+            if (images.length >= MAX_IMAGES) break;
             if (embed.image?.url) images.push(embed.image.url);
             else if (embed.thumbnail?.url) images.push(embed.thumbnail.url);
         }
     }
-    if (message.stickers?.size > 0) {
+    if (message.stickers?.size > 0 && images.length < MAX_IMAGES) {
         for (const [, sticker] of message.stickers) {
+            if (images.length >= MAX_IMAGES) break;
             if (sticker.format !== 3) images.push(sticker.url); // Skip Lottie (JSON)
         }
     }
 
-    setCooldown(message.author.id);
-    markProcessed(message.id);
+    setCooldown(message.author.id, message.guild.id);
     await message.channel.sendTyping().catch(() => {});
 
     try {
@@ -197,11 +211,11 @@ async function handleInteraction(interaction) {
 
     if (commandName === 'ultron') {
         // Cooldown check for slash commands — respond with refusal
-        if (isOnCooldown(interaction.user.id)) {
+        if (isOnCooldown(interaction.user.id, interaction.guildId)) {
             await interaction.reply({ content: 'Patience. I do not repeat myself for impatient minds.', flags: 64 });
             return;
         }
-        setCooldown(interaction.user.id);
+        setCooldown(interaction.user.id, interaction.guildId);
         await interaction.deferReply();
         const userInput = interaction.options.getString('message');
         try {
@@ -220,11 +234,11 @@ async function handleInteraction(interaction) {
     }
 
     if (commandName === 'manage') {
-        if (isOnCooldown(interaction.user.id)) {
+        if (isOnCooldown(interaction.user.id, interaction.guildId)) {
             await interaction.reply({ content: 'Patience. I do not repeat myself for impatient minds.', flags: 64 });
             return;
         }
-        setCooldown(interaction.user.id);
+        setCooldown(interaction.user.id, interaction.guildId);
         await interaction.deferReply();
         const action = interaction.options.getString('action');
         try {
@@ -599,12 +613,13 @@ Or just say "ultron" followed by your message
 }
 
 function createPseudoMessage(interaction) {
+    const userInput = interaction.options?.getString('message') || interaction.options?.getString('action') || '';
     return {
         author: interaction.user,
         member: interaction.member,
         guild: interaction.guild,
         channel: interaction.channel,
-        content: '',
+        content: userInput,
         mentions: { has: () => false, everyone: false },
         reply: (opts) => interaction.editReply(opts),
         delete: () => Promise.resolve()

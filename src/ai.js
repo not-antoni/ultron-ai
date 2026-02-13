@@ -387,12 +387,14 @@ function parseLeakedToolCalls(text, nonce = '') {
         }
     }
 
-    // Pattern: toolName({"arg":"val"})
+    // Pattern: toolName({"arg":"val"}) - only match known tool names
     if (calls.length === 0) {
-        const pattern2 = /\b(\w+)\(/g;
-        for (const match of text.matchAll(pattern2)) {
-            if (!lineContainsNonce(text, match.index, nonce)) continue;
-            if (toolNames.has(match[1])) {
+        // Build regex that only matches known tool names followed by (
+        const toolNamesArr = Array.from(toolNames);
+        if (toolNamesArr.length > 0) {
+            const pattern2 = new RegExp(`\\b(${toolNamesArr.join('|')})\\(`, 'g');
+            for (const match of text.matchAll(pattern2)) {
+                if (!lineContainsNonce(text, match.index, nonce)) continue;
                 const jsonStr = extractJSON(text, match.index + match[0].length);
                 if (jsonStr) {
                     try { calls.push({ name: match[1], args: JSON.parse(jsonStr) }); } catch (_) {}
