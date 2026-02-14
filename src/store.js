@@ -709,9 +709,25 @@ function removeTempBan(id) {
 
 // ── Guild Snapshot Helpers ──
 
+// better-sqlite3 only accepts: number, string, bigint, Buffer, null.
+// Coerce anything else (boolean, undefined, object, array) to a safe type.
+function sanitize(val) {
+    if (val === null || val === undefined) return null;
+    const t = typeof val;
+    if (t === 'number' || t === 'string' || t === 'bigint') return val;
+    if (t === 'boolean') return val ? 1 : 0;
+    if (Buffer.isBuffer(val)) return val;
+    // arrays, objects, Dates, etc.
+    return String(val);
+}
+
+function sanitizedRun(statement, ...args) {
+    return statement.run(...args.map(sanitize));
+}
+
 const insertSnapshotTx = db.transaction(snapshot => {
     const now = snapshot.createdAt || new Date().toISOString();
-    const info = stmt('insert_snapshot',
+    const insertSnapshotStmt = stmt('insert_snapshot',
         `INSERT INTO guild_snapshots (
             guild_id, created_at, name, icon, description, banner, splash, discovery_splash,
             vanity_url_code, nsfw_level, mfa_level, owner_id,
@@ -721,7 +737,8 @@ const insertSnapshotTx = db.transaction(snapshot => {
             member_count, channel_count, role_count, emoji_count, checksum
         )
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-    ).run(
+    );
+    const info = sanitizedRun(insertSnapshotStmt,
         snapshot.guildId,
         now,
         snapshot.name || null,
@@ -760,7 +777,7 @@ const insertSnapshotTx = db.transaction(snapshot => {
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     );
     for (const ch of snapshot.channels || []) {
-        insertChannel.run(
+        sanitizedRun(insertChannel,
             snapshotId,
             ch.id,
             ch.name,
@@ -796,7 +813,7 @@ const insertSnapshotTx = db.transaction(snapshot => {
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     );
     for (const role of snapshot.roles || []) {
-        insertRole.run(
+        sanitizedRun(insertRole,
             snapshotId,
             role.id,
             role.name,
@@ -817,7 +834,7 @@ const insertSnapshotTx = db.transaction(snapshot => {
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
     );
     for (const emoji of snapshot.emojis || []) {
-        insertEmoji.run(
+        sanitizedRun(insertEmoji,
             snapshotId,
             emoji.id,
             emoji.name,
@@ -836,7 +853,7 @@ const insertSnapshotTx = db.transaction(snapshot => {
          VALUES (?, ?, ?, ?, ?, ?)`
     );
     for (const ow of snapshot.overwrites || []) {
-        insertOverwrite.run(
+        sanitizedRun(insertOverwrite,
             snapshotId,
             ow.channelId,
             ow.targetId,
@@ -852,7 +869,7 @@ const insertSnapshotTx = db.transaction(snapshot => {
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
     );
     for (const sticker of snapshot.stickers || []) {
-        insertSticker.run(
+        sanitizedRun(insertSticker,
             snapshotId,
             sticker.id,
             sticker.name,
@@ -871,7 +888,7 @@ const insertSnapshotTx = db.transaction(snapshot => {
          VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
     );
     for (const hook of snapshot.webhooks || []) {
-        insertWebhook.run(
+        sanitizedRun(insertWebhook,
             snapshotId,
             hook.id,
             hook.name || null,
@@ -889,7 +906,7 @@ const insertSnapshotTx = db.transaction(snapshot => {
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     );
     for (const invite of snapshot.invites || []) {
-        insertInvite.run(
+        sanitizedRun(insertInvite,
             snapshotId,
             invite.code,
             invite.channelId || null,
@@ -912,7 +929,7 @@ const insertSnapshotTx = db.transaction(snapshot => {
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
     );
     for (const rule of snapshot.automod || []) {
-        insertAutomod.run(
+        sanitizedRun(insertAutomod,
             snapshotId,
             rule.id,
             rule.name || null,
@@ -931,7 +948,7 @@ const insertSnapshotTx = db.transaction(snapshot => {
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     );
     for (const ev of snapshot.events || []) {
-        insertEvent.run(
+        sanitizedRun(insertEvent,
             snapshotId,
             ev.id,
             ev.name || null,
@@ -954,7 +971,7 @@ const insertSnapshotTx = db.transaction(snapshot => {
          VALUES (?, ?, ?, ?, ?, ?)`
     );
     for (const msg of snapshot.messages || []) {
-        insertMessage.run(
+        sanitizedRun(insertMessage,
             snapshotId,
             msg.channelId,
             msg.messageId,
@@ -970,7 +987,7 @@ const insertSnapshotTx = db.transaction(snapshot => {
          VALUES (?, ?)`
     );
     for (const feature of snapshot.features || []) {
-        insertFeature.run(snapshotId, feature);
+        sanitizedRun(insertFeature, snapshotId, feature);
     }
 
     const insertChannelTag = stmt('insert_snapshot_channel_tag',
@@ -979,7 +996,7 @@ const insertSnapshotTx = db.transaction(snapshot => {
          VALUES (?, ?, ?, ?, ?, ?, ?)`
     );
     for (const tag of snapshot.channelTags || []) {
-        insertChannelTag.run(
+        sanitizedRun(insertChannelTag,
             snapshotId,
             tag.channelId,
             tag.tagId,
@@ -996,7 +1013,7 @@ const insertSnapshotTx = db.transaction(snapshot => {
          VALUES (?, ?, ?, ?)`
     );
     for (const tag of snapshot.roleTags || []) {
-        insertRoleTag.run(
+        sanitizedRun(insertRoleTag,
             snapshotId,
             tag.roleId,
             tag.tag,
@@ -1010,7 +1027,7 @@ const insertSnapshotTx = db.transaction(snapshot => {
          VALUES (?, ?, ?, ?, ?, ?, ?)`
     );
     for (const action of snapshot.automodActions || []) {
-        insertAutomodAction.run(
+        sanitizedRun(insertAutomodAction,
             snapshotId,
             action.ruleId,
             action.index ?? 0,
@@ -1027,7 +1044,7 @@ const insertSnapshotTx = db.transaction(snapshot => {
          VALUES (?, ?, ?, ?, ?)`
     );
     for (const item of snapshot.automodTriggerItems || []) {
-        insertAutomodTriggerItem.run(
+        sanitizedRun(insertAutomodTriggerItem,
             snapshotId,
             item.ruleId,
             item.key,
@@ -1042,7 +1059,7 @@ const insertSnapshotTx = db.transaction(snapshot => {
          VALUES (?, ?, ?)`
     );
     for (const entry of snapshot.automodExemptRoles || []) {
-        insertAutomodExemptRole.run(
+        sanitizedRun(insertAutomodExemptRole,
             snapshotId,
             entry.ruleId,
             entry.roleId
@@ -1055,7 +1072,7 @@ const insertSnapshotTx = db.transaction(snapshot => {
          VALUES (?, ?, ?)`
     );
     for (const entry of snapshot.automodExemptChannels || []) {
-        insertAutomodExemptChannel.run(
+        sanitizedRun(insertAutomodExemptChannel,
             snapshotId,
             entry.ruleId,
             entry.channelId
@@ -1068,7 +1085,7 @@ const insertSnapshotTx = db.transaction(snapshot => {
          VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
     );
     for (const member of snapshot.members || []) {
-        insertMember.run(
+        sanitizedRun(insertMember,
             snapshotId,
             member.userId,
             member.nick || null,
@@ -1086,7 +1103,7 @@ const insertSnapshotTx = db.transaction(snapshot => {
          VALUES (?, ?, ?)`
     );
     for (const entry of snapshot.memberRoles || []) {
-        insertMemberRole.run(
+        sanitizedRun(insertMemberRole,
             snapshotId,
             entry.userId,
             entry.roleId
