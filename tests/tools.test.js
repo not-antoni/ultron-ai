@@ -1026,8 +1026,13 @@ describe('Dynamic Tool Selection', () => {
         assert(!names.includes('kickMember'), 'should not include kickMember for tier 1');
     });
 
-    test('always includes base tools', () => {
+    test('returns no tools for generic greeting (no intent)', () => {
         const tools = selectToolsForMessage('hello ultron', 3);
+        assert.strictEqual(tools.length, 0, 'should return no tools for greeting with no intent');
+    });
+
+    test('includes base tools for queries', () => {
+        const tools = selectToolsForMessage('tell me about the server', 3);
         const names = tools.map(t => t.name);
         assert(names.includes('getServerInfo'), 'should include getServerInfo');
         assert(names.includes('getMemberInfo'), 'should include getMemberInfo');
@@ -1073,8 +1078,8 @@ describe('Tool Choice Detection', () => {
         assert.strictEqual(detectToolChoice('what roles are in the server'), 'auto');
     });
 
-    test('generic greeting → auto', () => {
-        assert.strictEqual(detectToolChoice('hello ultron'), 'auto');
+    test('generic greeting → none', () => {
+        assert.strictEqual(detectToolChoice('hello ultron'), 'none');
     });
 
     test('mixed action+query → auto', () => {

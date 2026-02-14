@@ -136,16 +136,16 @@ for (const decl of toolDeclarations) {
 const CATEGORY_KEYWORDS = {
     channel: /\b(?:channel|thread|archive|slow\s?mode|lock|unlock|nsfw|voice\s?limit|clone\s?channel|move\s?channel|forum|post|stage|bitrate|region)\b/i,
     role: /\b(?:role|assign|give\s+role|remove\s+role)\b/i,
-    moderation: /\b(?:kick|ban|unban|timeout|mute|unmute|nick(?:name)?|voice|disconnect|deafen)\b/i,
+    moderation: /\b(?:kick|ban|unban|timeout|mute|unmute|nick(?:name)?|voice|disconnect|deafen|undeafen)\b/i,
     message: /\b(?:message|send|purge|pin|unpin|embed|reply|react|poll|dm|direct\s+message)\b/i,
-    guild: /\b(?:server\s+(?:name|icon|banner|setting)|verification|afk|notification|rename\s+server)\b/i,
+    guild: /\b(?:server\s+(?:name|icon|banner|setting|info)|about\s+(?:the\s+)?server|verification|afk|notification|rename\s+server)\b/i,
     permission: /\b(?:perm(?:ission)?|overwrite|allow|deny)\b/i,
     document: /\b(?:document|doc|rule|guide|faq|note)\b/i,
     memory: /\b(?:memory|remember|forget|recall|memorize)\b/i,
     config: /\b(?:emoji|emote|sticker|webhook|invite|event|schedule|automod|welcome|goodbye|autorole|reaction\s?role)\b/i,
 };
 
-const ACTION_PATTERN = /\b(?:create|make|add|build|delete|remove|destroy|kick|ban|timeout|mute|purge|send|lock|unlock|set|assign|move|clone|rename|edit|change|update|pin|unpin|setup|configure|save|dm|clear)\b/i;
+const ACTION_PATTERN = /\b(?:create|make|add|build|delete|remove|destroy|kick|ban|timeout|mute|unmute|purge|send|lock|unlock|set|assign|move|clone|rename|edit|change|update|pin|unpin|setup|configure|save|dm|clear|give|grant|revoke|show|post|start|stop|end|invite|react|deafen|undeafen|enable|disable)\b/i;
 const QUERY_PATTERN = /\b(?:what|who|when|where|how|why|list|show|tell|info|status|get|read|check|describe|count|many)\b/i;
 
 function selectToolsForMessage(userInput, userTier) {
@@ -163,7 +163,6 @@ function selectToolsForMessage(userInput, userTier) {
 
     // If no intent or category match, skip tools entirely
     if (!hasAction && !hasQuery && matchedCategories.size === 0) return [];
-    if (!hasAction && matchedCategories.size === 0) return [];
 
     // Start with base tools
     const selectedNames = new Set(BASE_TOOL_NAMES);
@@ -481,7 +480,7 @@ async function generateWithOpenAI(systemPrompt, contents, message, images = [], 
 
         messages.push({
             role: assistant.role || 'assistant',
-            content: assistant.content ?? '',
+            content: assistant.tool_calls ? (assistant.content || null) : (assistant.content ?? ''),
             tool_calls: assistant.tool_calls
         });
 

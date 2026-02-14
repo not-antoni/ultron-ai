@@ -140,7 +140,8 @@ const toolDeclarations = [
             type: SchemaType.OBJECT,
             properties: {
                 channel: { type: SchemaType.STRING, description: 'Channel name or ID' }
-            }
+            },
+            required: []
         }
     },
     {
@@ -151,7 +152,8 @@ const toolDeclarations = [
             type: SchemaType.OBJECT,
             properties: {
                 channel: { type: SchemaType.STRING, description: 'Channel name or ID' }
-            }
+            },
+            required: []
         }
     },
 
@@ -559,7 +561,8 @@ const toolDeclarations = [
                 channel: { type: SchemaType.STRING, description: 'Channel name or ID' },
                 maxUses: { type: SchemaType.NUMBER, description: 'Max uses (0=unlimited)' },
                 maxAge: { type: SchemaType.NUMBER, description: 'Max age in seconds (0=never)' }
-            }
+            },
+            required: []
         }
     },
     {
@@ -592,7 +595,8 @@ const toolDeclarations = [
             properties: {
                 limit: { type: SchemaType.NUMBER, description: 'Entries to fetch (1-25)' },
                 user: { type: SchemaType.STRING, description: 'Filter by user' }
-            }
+            },
+            required: []
         }
     },
 
@@ -869,7 +873,8 @@ const toolDeclarations = [
             type: SchemaType.OBJECT,
             properties: {
                 limit: { type: SchemaType.NUMBER, description: 'Max results (1-100, default 50)' }
-            }
+            },
+            required: []
         }
     },
     {
@@ -880,7 +885,8 @@ const toolDeclarations = [
             type: SchemaType.OBJECT,
             properties: {
                 limit: { type: SchemaType.NUMBER, description: 'Max results (1-100, default 50)' }
-            }
+            },
+            required: []
         }
     },
 
@@ -895,7 +901,8 @@ const toolDeclarations = [
             properties: {
                 channel: { type: SchemaType.STRING, description: 'Channel name or ID' },
                 count: { type: SchemaType.NUMBER, description: 'Number to fetch (1-25)' }
-            }
+            },
+            required: []
         }
     },
     {
@@ -1378,7 +1385,8 @@ const toolDeclarations = [
             type: SchemaType.OBJECT,
             properties: {
                 channel: { type: SchemaType.STRING, description: 'Channel to list threads from (optional)' }
-            }
+            },
+            required: []
         }
     },
     {
@@ -1390,7 +1398,8 @@ const toolDeclarations = [
             properties: {
                 limit: { type: SchemaType.STRING, description: 'Max entries to return (default 25, max 50)' },
                 toolName: { type: SchemaType.STRING, description: 'Filter by tool name (optional)' }
-            }
+            },
+            required: []
         }
     }
 ];
