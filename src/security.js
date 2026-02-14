@@ -1610,13 +1610,11 @@ async function buildSnapshot(guild) {
                     });
                 });
 
-                for (const role of rule.exemptRoles || []) {
-                    const roleId = role?.id || role;
-                    if (roleId) automodExemptRoles.push({ ruleId: rule.id, roleId });
+                for (const roleId of rule.exemptRoles?.keys?.() ?? []) {
+                    if (roleId) automodExemptRoles.push({ ruleId: rule.id, roleId: String(roleId) });
                 }
-                for (const channel of rule.exemptChannels || []) {
-                    const channelId = channel?.id || channel;
-                    if (channelId) automodExemptChannels.push({ ruleId: rule.id, channelId });
+                for (const channelId of rule.exemptChannels?.keys?.() ?? []) {
+                    if (channelId) automodExemptChannels.push({ ruleId: rule.id, channelId: String(channelId) });
                 }
             }
         } catch (_) {}

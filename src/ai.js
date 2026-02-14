@@ -134,10 +134,10 @@ for (const decl of toolDeclarations) {
 
 // Keyword → category mapping for dynamic selection
 const CATEGORY_KEYWORDS = {
-    channel: /\b(?:channel|thread|archive|slow\s?mode|lock|unlock|nsfw|voice\s?limit|clone\s?channel|move\s?channel|forum|post|stage|bitrate|region)\b/i,
-    role: /\b(?:role|assign|give\s+role|remove\s+role)\b/i,
-    moderation: /\b(?:kick|ban|unban|timeout|mute|unmute|nick(?:name)?|voice|disconnect|deafen|undeafen)\b/i,
-    message: /\b(?:message|send|purge|pin|unpin|embed|reply|react|poll|dm|direct\s+message)\b/i,
+    channel: /\b(?:channel|thread|archive|slow\s?mode|lock|unlock|nsfw|voice\s?limit|clone\s?channel|move\s?channel|forum|post|stage|bitrate|region|topic)\b/i,
+    role: /\b(?:role|assign|give\s+role|remove\s+role|promote|demote)\b/i,
+    moderation: /\b(?:kick|ban|unban|timeout|mute|unmute|nick(?:name)?|voice|disconnect|deafen|undeafen|warn|punish)\b/i,
+    message: /\b(?:message|send|purge|pin|unpin|embed|reply|react|poll|dm|direct\s+message|announce|announcement)\b/i,
     guild: /\b(?:server\s+(?:name|icon|banner|setting|info)|about\s+(?:the\s+)?server|verification|afk|notification|rename\s+server)\b/i,
     permission: /\b(?:perm(?:ission)?|overwrite|allow|deny)\b/i,
     document: /\b(?:document|doc|rule|guide|faq|note)\b/i,
@@ -145,7 +145,7 @@ const CATEGORY_KEYWORDS = {
     config: /\b(?:emoji|emote|sticker|webhook|invite|event|schedule|automod|welcome|goodbye|autorole|reaction\s?role)\b/i,
 };
 
-const ACTION_PATTERN = /\b(?:create|make|add|build|delete|remove|destroy|kick|ban|timeout|mute|unmute|purge|send|lock|unlock|set|assign|move|clone|rename|edit|change|update|pin|unpin|setup|configure|save|dm|clear|give|grant|revoke|show|post|start|stop|end|invite|react|deafen|undeafen|enable|disable)\b/i;
+const ACTION_PATTERN = /\b(?:create|make|add|build|delete|remove|destroy|kick|ban|timeout|mute|unmute|purge|send|lock|unlock|set|assign|move|clone|rename|edit|change|update|pin|unpin|setup|configure|save|dm|clear|give|grant|revoke|post|start|stop|end|invite|react|deafen|undeafen|enable|disable)\b/i;
 const QUERY_PATTERN = /\b(?:what|who|when|where|how|why|list|show|tell|info|status|get|read|check|describe|count|many)\b/i;
 
 function selectToolsForMessage(userInput, userTier) {
@@ -177,6 +177,14 @@ function selectToolsForMessage(userInput, userTier) {
     for (const cat of matchedCategories) {
         const tools = toolsByCategory.get(cat);
         if (tools) for (const decl of tools) selectedNames.add(decl.name);
+    }
+
+    // Fallback: action intent detected but no category matched — include all
+    // action categories so the model can pick the right tool
+    if (hasAction && matchedCategories.size === 0) {
+        for (const [cat, tools] of toolsByCategory) {
+            for (const decl of tools) selectedNames.add(decl.name);
+        }
     }
 
     // Filter by user tier and build result in a single pass

@@ -1059,6 +1059,26 @@ describe('Dynamic Tool Selection', () => {
         const { toolDeclarations } = require('../src/tools');
         assert(tools.length < toolDeclarations.length, `${tools.length} should be less than ${toolDeclarations.length}`);
     });
+
+    test('includes renameChannel for "rename general to chat" (no category keyword)', () => {
+        const tools = selectToolsForMessage('rename general to chat', 3);
+        const names = tools.map(t => t.name);
+        assert(names.includes('renameChannel'), 'should include renameChannel via action fallback');
+    });
+
+    test('includes kickMember for "get rid of john" with kick-like phrasing', () => {
+        const tools = selectToolsForMessage('kick john', 3);
+        const names = tools.map(t => t.name);
+        assert(names.includes('kickMember'), 'should include kickMember');
+    });
+
+    test('action without category keyword includes all action tools as fallback', () => {
+        const tools = selectToolsForMessage('give john admin', 3);
+        const names = tools.map(t => t.name);
+        // "give" is an action but "admin" is not a category keyword
+        assert(names.includes('assignRole'), 'should include assignRole via fallback');
+        assert(names.includes('renameChannel'), 'should include renameChannel via fallback');
+    });
 });
 
 // ═══════════════════════════════════════════════════════════════
