@@ -1037,7 +1037,7 @@ describe('Dynamic Tool Selection', () => {
         assert(names.includes('getServerInfo'), 'should include getServerInfo');
         assert(names.includes('getMemberInfo'), 'should include getMemberInfo');
         assert(names.includes('readMessages'), 'should include readMessages');
-        assert(names.includes('sendMessage'), 'should include sendMessage');
+        assert(!names.includes('sendMessage'), 'should not include sendMessage in query-only base tools');
     });
 
     test('includes document tools for "doc" keyword', () => {

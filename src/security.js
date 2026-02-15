@@ -20,6 +20,8 @@ const SNAPSHOT_EMOJI_ASSET_MAX_BYTES = securityCfg.snapshotEmojiAssetMaxBytes ??
 const SNAPSHOT_EMOJI_ASSET_TIMEOUT_MS = securityCfg.snapshotEmojiAssetTimeoutMs ?? 5000;
 const SNAPSHOT_EMOJI_ASSET_CONCURRENCY = securityCfg.snapshotEmojiAssetConcurrency ?? 4;
 const SNAPSHOT_EMOJI_ASSET_SIZE = securityCfg.snapshotEmojiAssetSize ?? 128;
+const SNAPSHOT_MAX_GUILD_FAILURES = securityCfg.snapshotMaxGuildFailures ?? 5;
+const SNAPSHOT_BACKOFF_MS = securityCfg.snapshotBackoffMs ?? 30000;
 const ALERT_COOLDOWN_MS = securityCfg.alertCooldownMs ?? (5 * 60 * 1000);
 const AUDIT_LOG_WINDOW_MS = securityCfg.auditLogWindowMs ?? 45000;
 
@@ -57,6 +59,8 @@ const DIFF_THRESHOLDS = {
 
 const snapshotCache = new Map();
 const baselineReady = new Set();
+const pendingSnapshotPersist = new Set();
+const snapshotFailures = new Map();
 const alertCooldowns = new Map();
 
 const joinEvents = new Map();
@@ -88,6 +92,428 @@ function shouldAlert(guildId, type) {
     if (last && now - last < ALERT_COOLDOWN_MS) return false;
     alertCooldowns.set(key, now);
     return true;
+}
+
+function markSnapshotPhase(error, phase, guildId) {
+    const err = error instanceof Error ? error : new Error(String(error || 'unknown snapshot error'));
+    err.snapshotPhase = phase;
+    err.snapshotGuildId = guildId;
+    return err;
+}
+
+function normalizeString(value, maxLen = null) {
+    if (value === null || value === undefined) return null;
+    let out;
+    if (typeof value === 'string') out = value;
+    else if (typeof value === 'number' || typeof value === 'bigint' || typeof value === 'boolean') out = String(value);
+    else if (typeof value === 'symbol') out = String(value);
+    else if (value instanceof Date) out = Number.isFinite(value.getTime()) ? value.toISOString() : null;
+    else if (Buffer.isBuffer(value)) out = value.toString('utf8');
+    else {
+        try {
+            out = JSON.stringify(value);
+        } catch (_) {
+            out = String(value);
+        }
+    }
+    if (out === null || out === undefined) return null;
+    if (typeof out !== 'string') out = String(out);
+    return typeof maxLen === 'number' && maxLen > 0 ? out.slice(0, maxLen) : out;
+}
+
+function normalizeInteger(value) {
+    if (value === null || value === undefined || value === '') return null;
+    if (typeof value === 'boolean') return value ? 1 : 0;
+    let num;
+    try {
+        num = Number(value);
+    } catch (_) {
+        return null;
+    }
+    if (!Number.isFinite(num)) return null;
+    return Math.trunc(num);
+}
+
+function normalizeBoolean(value) {
+    if (value === null || value === undefined) return null;
+    if (typeof value === 'boolean') return value;
+    if (typeof value === 'number') return value !== 0;
+    if (typeof value === 'string') {
+        const v = value.trim().toLowerCase();
+        if (['1', 'true', 'yes', 'on'].includes(v)) return true;
+        if (['0', 'false', 'no', 'off'].includes(v)) return false;
+    }
+    return Boolean(value);
+}
+
+function normalizeBuffer(value) {
+    if (value === null || value === undefined) return null;
+    if (Buffer.isBuffer(value)) return value;
+    if (ArrayBuffer.isView(value)) {
+        try {
+            return Buffer.from(value.buffer, value.byteOffset, value.byteLength);
+        } catch (_) {
+            return null;
+        }
+    }
+    if (value instanceof ArrayBuffer) {
+        try {
+            return Buffer.from(value);
+        } catch (_) {
+            return null;
+        }
+    }
+    return null;
+}
+
+function normalizeRows(rows, counters, key, normalizer) {
+    const list = Array.isArray(rows) ? rows : [];
+    const out = [];
+    for (const row of list) {
+        try {
+            const normalized = normalizer(row || {});
+            if (!normalized) {
+                counters[key] = (counters[key] || 0) + 1;
+                continue;
+            }
+            out.push(normalized);
+        } catch (_) {
+            counters[key] = (counters[key] || 0) + 1;
+        }
+    }
+    return out;
+}
+
+function normalizeSnapshot(snapshot) {
+    const dropped = {};
+
+    const normalized = {
+        guildId: normalizeString(snapshot.guildId),
+        createdAt: normalizeString(snapshot.createdAt) || new Date().toISOString(),
+        name: normalizeString(snapshot.name),
+        icon: normalizeString(snapshot.icon),
+        description: normalizeString(snapshot.description),
+        banner: normalizeString(snapshot.banner),
+        splash: normalizeString(snapshot.splash),
+        discoverySplash: normalizeString(snapshot.discoverySplash),
+        vanityURLCode: normalizeString(snapshot.vanityURLCode),
+        nsfwLevel: normalizeString(snapshot.nsfwLevel),
+        mfaLevel: normalizeString(snapshot.mfaLevel),
+        ownerId: normalizeString(snapshot.ownerId),
+        verificationLevel: normalizeString(snapshot.verificationLevel),
+        defaultNotifications: normalizeString(snapshot.defaultNotifications),
+        explicitContentFilter: normalizeString(snapshot.explicitContentFilter),
+        preferredLocale: normalizeString(snapshot.preferredLocale),
+        premiumTier: normalizeInteger(snapshot.premiumTier),
+        systemChannelId: normalizeString(snapshot.systemChannelId),
+        rulesChannelId: normalizeString(snapshot.rulesChannelId),
+        afkChannelId: normalizeString(snapshot.afkChannelId),
+        afkTimeout: normalizeInteger(snapshot.afkTimeout),
+        memberCount: normalizeInteger(snapshot.memberCount),
+        channelCount: normalizeInteger(snapshot.channelCount),
+        roleCount: normalizeInteger(snapshot.roleCount),
+        emojiCount: normalizeInteger(snapshot.emojiCount),
+        features: [],
+        channels: [],
+        channelTags: [],
+        roles: [],
+        roleTags: [],
+        emojis: [],
+        overwrites: [],
+        stickers: [],
+        webhooks: [],
+        invites: [],
+        automod: [],
+        automodActions: [],
+        automodTriggerItems: [],
+        automodExemptRoles: [],
+        automodExemptChannels: [],
+        events: [],
+        messages: [],
+        members: [],
+        memberRoles: []
+    };
+
+    const featureList = Array.isArray(snapshot.features) ? snapshot.features : [];
+    const featureSet = new Set();
+    for (const raw of featureList) {
+        const feature = normalizeString(raw);
+        if (!feature) {
+            dropped.features = (dropped.features || 0) + 1;
+            continue;
+        }
+        featureSet.add(feature);
+    }
+    normalized.features = [...featureSet];
+
+    normalized.channels = normalizeRows(snapshot.channels, dropped, 'channels', row => {
+        const id = normalizeString(row.id);
+        const name = normalizeString(row.name);
+        const type = normalizeInteger(row.type);
+        if (!id || !name || type === null) return null;
+        return {
+            id,
+            name,
+            type,
+            parentId: normalizeString(row.parentId),
+            position: normalizeInteger(row.position),
+            topic: normalizeString(row.topic),
+            nsfw: normalizeBoolean(row.nsfw) || false,
+            rateLimitPerUser: normalizeInteger(row.rateLimitPerUser),
+            bitrate: normalizeInteger(row.bitrate),
+            userLimit: normalizeInteger(row.userLimit),
+            rtcRegion: normalizeString(row.rtcRegion),
+            defaultAutoArchiveDuration: normalizeInteger(row.defaultAutoArchiveDuration),
+            permissionsLocked: normalizeBoolean(row.permissionsLocked) || false,
+            flags: normalizeString(row.flags),
+            defaultThreadRateLimitPerUser: normalizeInteger(row.defaultThreadRateLimitPerUser),
+            defaultReactionEmojiId: normalizeString(row.defaultReactionEmojiId),
+            defaultReactionEmojiName: normalizeString(row.defaultReactionEmojiName),
+            defaultSortOrder: normalizeInteger(row.defaultSortOrder),
+            defaultForumLayout: normalizeInteger(row.defaultForumLayout),
+            videoQualityMode: normalizeInteger(row.videoQualityMode),
+            archived: normalizeBoolean(row.archived) || false,
+            autoArchiveDuration: normalizeInteger(row.autoArchiveDuration),
+            locked: normalizeBoolean(row.locked) || false,
+            invitable: normalizeBoolean(row.invitable) || false,
+            archiveTimestamp: normalizeString(row.archiveTimestamp)
+        };
+    });
+
+    normalized.channelTags = normalizeRows(snapshot.channelTags, dropped, 'channelTags', row => {
+        const channelId = normalizeString(row.channelId);
+        const tagId = normalizeString(row.tagId);
+        if (!channelId || !tagId) return null;
+        return {
+            channelId,
+            tagId,
+            name: normalizeString(row.name),
+            moderated: normalizeBoolean(row.moderated) || false,
+            emojiId: normalizeString(row.emojiId),
+            emojiName: normalizeString(row.emojiName)
+        };
+    });
+
+    normalized.roles = normalizeRows(snapshot.roles, dropped, 'roles', row => {
+        const id = normalizeString(row.id);
+        const name = normalizeString(row.name);
+        if (!id || !name) return null;
+        return {
+            id,
+            name,
+            color: normalizeInteger(row.color),
+            position: normalizeInteger(row.position),
+            permissions: normalizeString(row.permissions),
+            mentionable: normalizeBoolean(row.mentionable) || false,
+            hoist: normalizeBoolean(row.hoist) || false,
+            managed: normalizeBoolean(row.managed) || false,
+            icon: normalizeString(row.icon),
+            unicodeEmoji: normalizeString(row.unicodeEmoji)
+        };
+    });
+
+    normalized.roleTags = normalizeRows(snapshot.roleTags, dropped, 'roleTags', row => {
+        const roleId = normalizeString(row.roleId);
+        const tag = normalizeString(row.tag);
+        if (!roleId || !tag) return null;
+        return {
+            roleId,
+            tag,
+            value: normalizeString(row.value)
+        };
+    });
+
+    normalized.emojis = normalizeRows(snapshot.emojis, dropped, 'emojis', row => {
+        const id = normalizeString(row.id);
+        const name = normalizeString(row.name);
+        if (!id || !name) return null;
+        return {
+            id,
+            name,
+            animated: normalizeBoolean(row.animated) || false,
+            creatorId: normalizeString(row.creatorId),
+            createdAt: normalizeString(row.createdAt),
+            imageUrl: normalizeString(row.imageUrl),
+            imageType: normalizeString(row.imageType),
+            imageData: normalizeBuffer(row.imageData)
+        };
+    });
+
+    normalized.overwrites = normalizeRows(snapshot.overwrites, dropped, 'overwrites', row => {
+        const channelId = normalizeString(row.channelId);
+        const targetId = normalizeString(row.targetId);
+        const targetType = normalizeString(row.targetType);
+        if (!channelId || !targetId || !targetType) return null;
+        return {
+            channelId,
+            targetId,
+            targetType,
+            allow: normalizeString(row.allow),
+            deny: normalizeString(row.deny)
+        };
+    });
+
+    normalized.stickers = normalizeRows(snapshot.stickers, dropped, 'stickers', row => {
+        const id = normalizeString(row.id);
+        const name = normalizeString(row.name);
+        if (!id || !name) return null;
+        return {
+            id,
+            name,
+            description: normalizeString(row.description),
+            tags: normalizeString(row.tags),
+            formatType: normalizeInteger(row.formatType),
+            type: normalizeInteger(row.type),
+            available: normalizeBoolean(row.available) || false,
+            sortValue: normalizeInteger(row.sortValue)
+        };
+    });
+
+    normalized.webhooks = normalizeRows(snapshot.webhooks, dropped, 'webhooks', row => {
+        const id = normalizeString(row.id);
+        if (!id) return null;
+        return {
+            id,
+            name: normalizeString(row.name),
+            channelId: normalizeString(row.channelId),
+            type: normalizeInteger(row.type),
+            avatar: normalizeString(row.avatar),
+            ownerId: normalizeString(row.ownerId),
+            applicationId: normalizeString(row.applicationId)
+        };
+    });
+
+    normalized.invites = normalizeRows(snapshot.invites, dropped, 'invites', row => {
+        const code = normalizeString(row.code);
+        if (!code) return null;
+        return {
+            code,
+            channelId: normalizeString(row.channelId),
+            maxUses: normalizeInteger(row.maxUses),
+            maxAge: normalizeInteger(row.maxAge),
+            temporary: normalizeBoolean(row.temporary) || false,
+            uses: normalizeInteger(row.uses),
+            createdBy: normalizeString(row.createdBy),
+            createdAt: normalizeString(row.createdAt),
+            expiresAt: normalizeString(row.expiresAt),
+            targetType: normalizeString(row.targetType),
+            targetUserId: normalizeString(row.targetUserId),
+            targetApplicationId: normalizeString(row.targetApplicationId)
+        };
+    });
+
+    normalized.automod = normalizeRows(snapshot.automod, dropped, 'automod', row => {
+        const id = normalizeString(row.id);
+        if (!id) return null;
+        return {
+            id,
+            name: normalizeString(row.name),
+            enabled: normalizeBoolean(row.enabled) || false,
+            eventType: normalizeString(row.eventType),
+            triggerType: normalizeString(row.triggerType)
+        };
+    });
+
+    normalized.automodActions = normalizeRows(snapshot.automodActions, dropped, 'automodActions', row => {
+        const ruleId = normalizeString(row.ruleId);
+        if (!ruleId) return null;
+        return {
+            ruleId,
+            index: normalizeInteger(row.index) ?? 0,
+            type: normalizeString(row.type),
+            channelId: normalizeString(row.channelId),
+            durationSeconds: normalizeInteger(row.durationSeconds),
+            customMessage: normalizeString(row.customMessage)
+        };
+    });
+
+    normalized.automodTriggerItems = normalizeRows(snapshot.automodTriggerItems, dropped, 'automodTriggerItems', row => {
+        const ruleId = normalizeString(row.ruleId);
+        const key = normalizeString(row.key);
+        if (!ruleId || !key) return null;
+        return {
+            ruleId,
+            key,
+            index: normalizeInteger(row.index) ?? 0,
+            value: normalizeString(row.value)
+        };
+    });
+
+    normalized.automodExemptRoles = normalizeRows(snapshot.automodExemptRoles, dropped, 'automodExemptRoles', row => {
+        const ruleId = normalizeString(row.ruleId);
+        const roleId = normalizeString(row.roleId);
+        if (!ruleId || !roleId) return null;
+        return { ruleId, roleId };
+    });
+
+    normalized.automodExemptChannels = normalizeRows(snapshot.automodExemptChannels, dropped, 'automodExemptChannels', row => {
+        const ruleId = normalizeString(row.ruleId);
+        const channelId = normalizeString(row.channelId);
+        if (!ruleId || !channelId) return null;
+        return { ruleId, channelId };
+    });
+
+    normalized.events = normalizeRows(snapshot.events, dropped, 'events', row => {
+        const id = normalizeString(row.id);
+        if (!id) return null;
+        return {
+            id,
+            name: normalizeString(row.name),
+            description: normalizeString(row.description),
+            startTime: normalizeString(row.startTime),
+            endTime: normalizeString(row.endTime),
+            entityType: normalizeString(row.entityType),
+            status: normalizeString(row.status),
+            location: normalizeString(row.location),
+            channelId: normalizeString(row.channelId),
+            privacyLevel: normalizeString(row.privacyLevel),
+            creatorId: normalizeString(row.creatorId),
+            image: normalizeString(row.image)
+        };
+    });
+
+    normalized.messages = normalizeRows(snapshot.messages, dropped, 'messages', row => {
+        const channelId = normalizeString(row.channelId);
+        const messageId = normalizeString(row.messageId);
+        const content = normalizeString(row.content, 2000);
+        if (!channelId || !messageId || !content) return null;
+        return {
+            channelId,
+            messageId,
+            authorId: normalizeString(row.authorId),
+            content,
+            createdAt: normalizeString(row.createdAt)
+        };
+    });
+
+    normalized.members = normalizeRows(snapshot.members, dropped, 'members', row => {
+        const userId = normalizeString(row.userId);
+        if (!userId) return null;
+        return {
+            userId,
+            nick: normalizeString(row.nick),
+            joinedAt: normalizeString(row.joinedAt),
+            bot: normalizeBoolean(row.bot) || false,
+            pending: normalizeBoolean(row.pending) || false,
+            communicationDisabledUntil: normalizeString(row.communicationDisabledUntil),
+            avatar: normalizeString(row.avatar)
+        };
+    });
+
+    normalized.memberRoles = normalizeRows(snapshot.memberRoles, dropped, 'memberRoles', row => {
+        const userId = normalizeString(row.userId);
+        const roleId = normalizeString(row.roleId);
+        if (!userId || !roleId) return null;
+        return { userId, roleId };
+    });
+
+    normalized.channelCount = normalized.channels.length;
+    normalized.roleCount = normalized.roles.length;
+    normalized.emojiCount = normalized.emojis.length;
+    if (!normalized.guildId) normalized.guildId = null;
+
+    const droppedTotal = Object.values(dropped).reduce((sum, count) => sum + count, 0);
+    return { snapshot: normalized, dropped, droppedTotal };
 }
 
 function isTrustedExecutor(guild, executorId) {
@@ -1695,7 +2121,7 @@ async function buildSnapshot(guild) {
         } catch (_) {}
     }
 
-    const snapshot = {
+    const rawSnapshot = {
         guildId: guild.id,
         createdAt: new Date().toISOString(),
         name: guild.name,
@@ -1741,8 +2167,14 @@ async function buildSnapshot(guild) {
         members,
         memberRoles
     };
-    snapshot.checksum = computeChecksum(snapshot);
-    return snapshot;
+    const normalized = normalizeSnapshot(rawSnapshot);
+    if (normalized.droppedTotal > 0) {
+        const parts = Object.entries(normalized.dropped).map(([k, v]) => `${k}:${v}`).join(',');
+        log.warn(`Snapshot normalize dropped guild=${guild.id} total=${normalized.droppedTotal} details=${parts}`);
+    }
+
+    normalized.snapshot.checksum = computeChecksum(normalized.snapshot);
+    return normalized.snapshot;
 }
 
 function indexById(list, key = 'id') {
@@ -2020,41 +2452,79 @@ async function raiseAlert(guild, payload) {
 // ── Passive Snapshot Scan ──
 
 async function runSnapshotScan(guild) {
-    const previous = snapshotCache.get(guild.id) || store.getLatestGuildSnapshot(guild.id);
-    const current = await buildSnapshot(guild);
+    let previous;
+    try {
+        previous = snapshotCache.get(guild.id) || store.getLatestGuildSnapshot(guild.id);
+    } catch (err) {
+        throw markSnapshotPhase(err, 'load-previous', guild.id);
+    }
 
-    // Always persist first baseline snapshot
-    if (!baselineReady.has(guild.id)) {
-        if (previous && previous.checksum !== current.checksum) {
-            const diff = diffSnapshots(previous, current);
-            const triggers = evaluateDiff(diff, previous);
-            for (const trigger of triggers) {
-                await raiseAlert(guild, {
-                    ...trigger,
-                    details: `${trigger.details} Detected since last baseline (bot was offline).`
-                });
-            }
-        }
+    let current;
+    try {
+        current = await buildSnapshot(guild);
+    } catch (err) {
+        throw markSnapshotPhase(err, 'build-snapshot', guild.id);
+    }
+
+    const persistCurrent = () => {
         store.createGuildSnapshot(current);
         store.pruneGuildSnapshots(guild.id, SNAPSHOT_RETENTION);
+        pendingSnapshotPersist.delete(guild.id);
+    };
+
+    const sendDiffAlerts = async (diff, prev, offlineBaseline = false) => {
+        const triggers = evaluateDiff(diff, prev);
+        for (const trigger of triggers) {
+            const payload = offlineBaseline
+                ? {
+                    ...trigger,
+                    details: `${trigger.details} Detected since last baseline (bot was offline).`
+                }
+                : trigger;
+            try {
+                await raiseAlert(guild, payload);
+            } catch (alertErr) {
+                log.warn(`Snapshot alert failed guild=${guild.id} type=${payload.type}: ${alertErr.message}`);
+            }
+        }
+    };
+
+    const needsPersistRetry = pendingSnapshotPersist.has(guild.id);
+    const unchanged = previous && previous.checksum === current.checksum;
+
+    if (!baselineReady.has(guild.id)) {
+        if (previous && !unchanged) {
+            const diff = diffSnapshots(previous, current);
+            await sendDiffAlerts(diff, previous, true);
+        }
+
+        try {
+            persistCurrent();
+        } catch (err) {
+            pendingSnapshotPersist.add(guild.id);
+            snapshotCache.set(guild.id, current);
+            baselineReady.add(guild.id);
+            throw markSnapshotPhase(err, 'persist-baseline', guild.id);
+        }
+
         snapshotCache.set(guild.id, current);
         baselineReady.add(guild.id);
         return;
     }
 
-    // Skip if unchanged
-    if (previous && previous.checksum === current.checksum) return;
+    if (unchanged && !needsPersistRetry) return;
 
-    // Persist new snapshot
-    store.createGuildSnapshot(current);
-    store.pruneGuildSnapshots(guild.id, SNAPSHOT_RETENTION);
-
-    if (previous) {
+    if (previous && !unchanged) {
         const diff = diffSnapshots(previous, current);
-        const triggers = evaluateDiff(diff, previous);
-        for (const trigger of triggers) {
-            await raiseAlert(guild, trigger);
-        }
+        await sendDiffAlerts(diff, previous);
+    }
+
+    try {
+        persistCurrent();
+    } catch (err) {
+        pendingSnapshotPersist.add(guild.id);
+        snapshotCache.set(guild.id, current);
+        throw markSnapshotPhase(err, 'persist-snapshot', guild.id);
     }
 
     snapshotCache.set(guild.id, current);
@@ -2067,10 +2537,28 @@ function startSecurityMonitor(client) {
         scanRunning = true;
         try {
             for (const [, guild] of client.guilds.cache) {
+                const now = Date.now();
+                const failureState = snapshotFailures.get(guild.id);
+                if (failureState?.nextRetryAt && failureState.nextRetryAt > now) continue;
+
                 try {
                     await runSnapshotScan(guild);
+                    snapshotFailures.delete(guild.id);
                 } catch (err) {
-                    log.warn(`Snapshot scan failed for ${guild.id}: ${err.message}`);
+                    const prev = snapshotFailures.get(guild.id) || { count: 0 };
+                    const nextCount = prev.count + 1;
+                    const scaled = SNAPSHOT_BACKOFF_MS * Math.max(1, Math.min(nextCount, SNAPSHOT_MAX_GUILD_FAILURES));
+                    const jitterMax = Math.max(250, Math.floor(scaled * 0.15));
+                    const jitter = Math.floor(Math.random() * jitterMax);
+                    const nextRetryMs = scaled + jitter;
+                    snapshotFailures.set(guild.id, {
+                        count: nextCount,
+                        nextRetryAt: now + nextRetryMs
+                    });
+
+                    const phase = err?.snapshotPhase || 'unknown';
+                    const stmt = err?.statementKey ? ` stmt=${err.statementKey}` : '';
+                    log.warn(`Snapshot scan failed guild=${guild.id} phase=${phase}${stmt} attempt=${nextCount} retryMs=${nextRetryMs}: ${err.message}`);
                 }
             }
         } finally {
@@ -2316,5 +2804,9 @@ module.exports = {
     handleEmojiCreate,
     handleEmojiDelete,
     handleEmojiUpdate,
-    handleGuildBanAdd
+    handleGuildBanAdd,
+    _internal: {
+        normalizeSnapshot,
+        markSnapshotPhase
+    }
 };

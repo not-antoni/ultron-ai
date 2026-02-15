@@ -1,4 +1,5 @@
 const { ChannelType, PermissionsBitField, GuildVerificationLevel, AutoModerationRuleTriggerType, AutoModerationActionType, AutoModerationRuleEventType, GuildScheduledEventPrivacyLevel, GuildScheduledEventEntityType, EmbedBuilder, GuildDefaultMessageNotifications, PollLayoutType, AuditLogEvent } = require('discord.js');
+const config = require('../config');
 const store = require('./store');
 const { createLogger } = require('./logger');
 const log = createLogger('Ultron');
@@ -11,6 +12,21 @@ const MAX_MEMORY_ENTRIES = 100;
 const MAX_MEMORY_VALUE_CHARS = 4000;
 const MAX_READ_MESSAGES = 25;
 const MAX_TEMP_BAN_MS = 30 * 86400000;
+const TOOL_TIMEOUT_MS = Math.max(1000, Number(config.aiToolTimeoutMs) || 12000);
+
+async function withToolTimeout(promise, toolName) {
+    let timeoutHandle = null;
+    try {
+        return await Promise.race([
+            promise,
+            new Promise((_, reject) => {
+                timeoutHandle = setTimeout(() => reject(new Error(`Tool "${toolName}" timed out after ${TOOL_TIMEOUT_MS}ms.`)), TOOL_TIMEOUT_MS);
+            })
+        ]);
+    } finally {
+        if (timeoutHandle) clearTimeout(timeoutHandle);
+    }
+}
 
 // ── Resolvers ──
 
@@ -132,7 +148,6 @@ function getUserTier(member, guildId) {
     if (member.permissions.has(PermissionsBitField.Flags.Administrator)) return TIERS.admin;
 
     // Global bot owner (adminUserId from config)
-    const config = require('../config');
     if (config.adminUserId && member.id === config.adminUserId) return TIERS.admin;
 
     // Configured bot admins
@@ -1362,12 +1377,15 @@ function checkRateLimit(userId) {
 }
 
 // Cleanup stale entries every 5 minutes
-setInterval(() => {
+const rateLimitCleanupTimer = setInterval(() => {
     const now = Date.now();
     for (const [userId, bucket] of rateLimitMap) {
         if (now - bucket.windowStart > RATE_LIMIT_WINDOW) rateLimitMap.delete(userId);
     }
 }, 300000);
+if (typeof rateLimitCleanupTimer.unref === 'function') {
+    rateLimitCleanupTimer.unref();
+}
 
 // ── Executor ──
 
@@ -1386,7 +1404,7 @@ async function executeTool(name, args, message) {
     if (!tierCheck.allowed) return { error: tierCheck.error };
 
     try {
-        const result = await fn(args || {}, message);
+        const result = await withToolTimeout(fn(args || {}, message), name);
         store.logAudit(message.guild.id, message.author.id, name, args || {}, result);
         return result;
     } catch (err) {

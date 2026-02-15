@@ -49,6 +49,8 @@ module.exports = {
         autoBanBots: parseBool(process.env.SECURITY_AUTO_BAN_BOTS, false),
         trustedBotIds: parseList(process.env.SECURITY_TRUSTED_BOT_IDS),
         snapshotIntervalMs: parseInt(process.env.SECURITY_SNAPSHOT_INTERVAL_MS || '300000', 10),
+        snapshotMaxGuildFailures: parseInt(process.env.SECURITY_SNAPSHOT_MAX_GUILD_FAILURES || '5', 10),
+        snapshotBackoffMs: parseInt(process.env.SECURITY_SNAPSHOT_BACKOFF_MS || '30000', 10),
         snapshotRetention: parseInt(process.env.SECURITY_SNAPSHOT_RETENTION || '3', 10),
         snapshotIncludeMembers: parseBool(process.env.SECURITY_SNAPSHOT_INCLUDE_MEMBERS, true),
         snapshotMessageLimit: parseInt(process.env.SECURITY_SNAPSHOT_MESSAGE_LIMIT || '10', 10),
@@ -84,6 +86,9 @@ module.exports = {
     },
     maxConversationHistory: parseInt(process.env.MAX_CONVERSATION_HISTORY || '15', 10),
     maxToolRounds: parseInt(process.env.MAX_TOOL_ROUNDS || '10', 10),
+    aiToolTimeoutMs: parseInt(process.env.AI_TOOL_TIMEOUT_MS || '12000', 10),
+    aiMaxConcurrentRequests: parseInt(process.env.AI_MAX_CONCURRENT_REQUESTS || '4', 10),
+    aiToolRepeatGuard: parseInt(process.env.AI_TOOL_REPEAT_GUARD || '2', 10),
     logging: {
         level: process.env.LOG_LEVEL || 'info',
         file: process.env.LOG_FILE || null

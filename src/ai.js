@@ -22,6 +22,56 @@ function withTimeout(promise, ms = API_TIMEOUT_MS) {
     ]);
 }
 
+const MAX_CONCURRENT_REQUESTS = Math.max(1, Number(config.aiMaxConcurrentRequests) || 4);
+const TOOL_REPEAT_GUARD = Math.max(1, Number(config.aiToolRepeatGuard) || 2);
+
+let activeModelRequests = 0;
+const modelQueue = [];
+function acquireModelSlot() {
+    if (activeModelRequests < MAX_CONCURRENT_REQUESTS) {
+        activeModelRequests += 1;
+        return Promise.resolve();
+    }
+    return new Promise(resolve => {
+        modelQueue.push(() => {
+            activeModelRequests += 1;
+            resolve();
+        });
+    });
+}
+
+function releaseModelSlot() {
+    activeModelRequests = Math.max(0, activeModelRequests - 1);
+    const next = modelQueue.shift();
+    if (next) next();
+}
+
+async function withModelSlot(task) {
+    await acquireModelSlot();
+    try {
+        return await task();
+    } finally {
+        releaseModelSlot();
+    }
+}
+
+const conversationLocks = new Map();
+async function withConversationLock(key, task) {
+    const previous = conversationLocks.get(key) || Promise.resolve();
+    let release;
+    const current = new Promise(resolve => { release = resolve; });
+    const lockTail = previous.then(() => current, () => current);
+    conversationLocks.set(key, lockTail);
+
+    await previous.catch(() => {});
+    try {
+        return await task();
+    } finally {
+        release();
+        if (conversationLocks.get(key) === lockTail) conversationLocks.delete(key);
+    }
+}
+
 // ── Response Cleanup ──
 
 // Patterns for leaked function calls that models dump as text
@@ -119,7 +169,7 @@ function extractJSON(text, startIndex) {
 // Base tools always included regardless of message content
 const BASE_TOOL_NAMES = new Set([
     'getServerInfo', 'getMemberInfo', 'readMessages', 'fetchMessage',
-    'listChannels', 'listRoles', 'saveMemory', 'getMemory', 'sendMessage'
+    'listChannels', 'listRoles', 'saveMemory', 'getMemory'
 ]);
 
 // Pre-index tools by category and name at module load time
@@ -144,6 +194,10 @@ const CATEGORY_KEYWORDS = {
     memory: /\b(?:memory|remember|forget|recall|memorize)\b/i,
     config: /\b(?:emoji|emote|sticker|webhook|invite|event|schedule|automod|welcome|goodbye|autorole|reaction\s?role)\b/i,
 };
+
+const ACTION_FALLBACK_CATEGORIES = [
+    'channel', 'role', 'moderation', 'message', 'guild', 'permission', 'document', 'memory', 'config'
+];
 
 const ACTION_PATTERN = /\b(?:create|make|add|build|delete|remove|destroy|kick|ban|timeout|mute|unmute|purge|send|lock|unlock|set|assign|move|clone|rename|edit|change|update|pin|unpin|setup|configure|save|dm|clear|give|grant|revoke|post|start|stop|end|invite|react|deafen|undeafen|enable|disable)\b/i;
 const QUERY_PATTERN = /\b(?:what|who|when|where|how|why|list|show|tell|info|status|get|read|check|describe|count|many)\b/i;
@@ -182,7 +236,9 @@ function selectToolsForMessage(userInput, userTier) {
     // Fallback: action intent detected but no category matched — include all
     // action categories so the model can pick the right tool
     if (hasAction && matchedCategories.size === 0) {
-        for (const [cat, tools] of toolsByCategory) {
+        for (const cat of ACTION_FALLBACK_CATEGORIES) {
+            const tools = toolsByCategory.get(cat);
+            if (!tools) continue;
             for (const decl of tools) selectedNames.add(decl.name);
         }
     }
@@ -413,6 +469,15 @@ function parseLeakedToolCalls(text, nonce = '') {
     return calls;
 }
 
+function stableStringify(value) {
+    if (value === null || value === undefined) return String(value);
+    if (typeof value !== 'object') return JSON.stringify(value);
+    if (Array.isArray(value)) return `[${value.map(stableStringify).join(',')}]`;
+    const keys = Object.keys(value).sort();
+    const parts = keys.map(key => `${JSON.stringify(key)}:${stableStringify(value[key])}`);
+    return `{${parts.join(',')}}`;
+}
+
 function buildOpenAIMessages(systemPrompt, contents, images) {
     const messages = [{ role: 'system', content: systemPrompt }];
     const lastIdx = contents.length - 1;
@@ -454,13 +519,13 @@ async function openaiRequest(messages, tools, toolChoice) {
     if (verbosity) opts.verbosity = verbosity;
 
     try {
-        return await withTimeout(openai.chat.completions.create(opts));
+        return await withModelSlot(() => withTimeout(openai.chat.completions.create(opts)));
     } catch (err) {
         const msg = err?.message || '';
         if ((reasoningEffort || verbosity) &&
             /reasoning|verbosity|unknown|invalid/i.test(msg)) {
             openaiLog.warn(`OpenAI params rejected, retrying without reasoning/verbosity: ${msg}`);
-            return await withTimeout(openai.chat.completions.create(baseOpts));
+            return await withModelSlot(() => withTimeout(openai.chat.completions.create(baseOpts)));
         }
         throw err;
     }
@@ -479,6 +544,7 @@ async function generateWithOpenAI(systemPrompt, contents, message, images = [], 
     const messages = buildOpenAIMessages(systemPrompt, contents, images);
 
     const toolLog = [];
+    const repeatedToolCalls = new Map();
     let rounds = 0;
     while (rounds <= config.maxToolRounds) {
         const currentChoice = rounds === 0 ? toolChoice : 'auto';
@@ -497,17 +563,29 @@ async function generateWithOpenAI(systemPrompt, contents, message, images = [], 
             return { text: assistant.content?.trim() || null, toolLog };
         }
 
+        const roundResultCache = new Map();
         for (const tc of toolCalls) {
             const name = tc.function?.name;
             let args = {};
             try { args = JSON.parse(tc.function?.arguments || '{}'); } catch (_) {}
             openaiLog.info(`Tool: ${name}(${JSON.stringify(args)})`);
 
+            const callKey = `${name}:${stableStringify(args)}`;
+            const seenCount = (repeatedToolCalls.get(callKey) || 0) + 1;
+            repeatedToolCalls.set(callKey, seenCount);
+
             let toolResult;
-            try {
-                toolResult = await executeTool(name, args, message);
-            } catch (err) {
-                toolResult = { error: err.message };
+            if (seenCount > TOOL_REPEAT_GUARD) {
+                toolResult = { error: `Repeated tool call blocked after ${TOOL_REPEAT_GUARD} duplicate calls in this turn.` };
+            } else if (roundResultCache.has(callKey)) {
+                toolResult = roundResultCache.get(callKey);
+            } else {
+                try {
+                    toolResult = await executeTool(name, args, message);
+                } catch (err) {
+                    toolResult = { error: err.message };
+                }
+                roundResultCache.set(callKey, toolResult);
             }
 
             toolLog.push({ tool: name, args, result: toolResult });
@@ -563,10 +641,11 @@ async function generateWithGemma(systemPrompt, contents, message, images = [], u
     const model = genAI.getGenerativeModel(modelConfig);
 
     const toolLog = [];
+    const repeatedToolCalls = new Map();
     let rounds = 0;
     let forcedRetry = false;
     while (rounds <= config.maxToolRounds) {
-        const result = await withTimeout(model.generateContent({ contents: working }));
+        const result = await withModelSlot(() => withTimeout(model.generateContent({ contents: working })));
         const text = result?.response?.text?.() || '';
         const content = text.trim();
         if (!content) return { text: null, toolLog };
@@ -587,13 +666,25 @@ async function generateWithGemma(systemPrompt, contents, message, images = [], u
         }
 
         const results = [];
+        const roundResultCache = new Map();
         for (const lc of leakedCalls) {
             gemmaLog.info(`Tool (text): ${lc.name}(${JSON.stringify(lc.args)})`);
+            const callKey = `${lc.name}:${stableStringify(lc.args || {})}`;
+            const seenCount = (repeatedToolCalls.get(callKey) || 0) + 1;
+            repeatedToolCalls.set(callKey, seenCount);
+
             let toolResult;
-            try {
-                toolResult = await executeTool(lc.name, lc.args, message);
-            } catch (err) {
-                toolResult = { error: err.message };
+            if (seenCount > TOOL_REPEAT_GUARD) {
+                toolResult = { error: `Repeated tool call blocked after ${TOOL_REPEAT_GUARD} duplicate calls in this turn.` };
+            } else if (roundResultCache.has(callKey)) {
+                toolResult = roundResultCache.get(callKey);
+            } else {
+                try {
+                    toolResult = await executeTool(lc.name, lc.args, message);
+                } catch (err) {
+                    toolResult = { error: err.message };
+                }
+                roundResultCache.set(callKey, toolResult);
             }
             toolLog.push({ tool: lc.name, args: lc.args, result: toolResult });
             results.push({ name: lc.name, result: toolResult });
@@ -614,105 +705,108 @@ async function generateWithGemma(systemPrompt, contents, message, images = [], u
 // ── Main Entry ──
 
 async function generateResponse(message, userInput, images = []) {
-    const guild = message.guild;
-    const userId = message.author.id;
-    const userName = message.author.displayName || message.author.username;
+    const lockKey = `${message.guild?.id || 'DM'}:${message.author?.id || 'unknown'}`;
+    return withConversationLock(lockKey, async () => {
+        const guild = message.guild;
+        const userId = message.author.id;
+        const userName = message.author.displayName || message.author.username;
 
-    const userTier = guild ? getUserTier(message.member, guild.id) : 1;
+        const userTier = guild ? getUserTier(message.member, guild.id) : 1;
 
-    let memories = [];
-    if (guild) {
-        const mem = store.read(`memory-${guild.id}.json`, {});
-        memories = Object.entries(mem).map(([key, entry]) => ({ key, value: entry.value }));
-    }
-
-    let documents = [];
-    if (guild) {
-        const docs = store.read(`documents-${guild.id}.json`, []);
-        documents = docs.map(d => ({ name: d.name }));
-    }
-
-    const systemPrompt = getSystemPrompt(guild, { userTier, userName, memories, documents });
-
-    const historyFile = guild ? `conversations-${guild.id}-${userId}.json` : `conversations-dm-${userId}.json`;
-    const history = store.read(historyFile, []);
-
-    // Only include tool context from the last 3 messages to avoid stale state beliefs
-    const recentHistory = history.slice(-config.maxConversationHistory);
-    const recentToolEntries = recentHistory.slice(-3).filter(e => e.toolContext);
-    const toolSummary = recentToolEntries.map(e => e.toolContext).join(' ');
-
-    const contents = [];
-    if (toolSummary) {
-        contents.push({ role: 'user', parts: [{ text: `[SYSTEM] Actions from your last few messages (may no longer reflect current state — always use tools to verify): ${toolSummary}` }] });
-        contents.push({ role: 'model', parts: [{ text: 'Understood.' }] });
-    }
-    for (const entry of recentHistory) {
-        contents.push({ role: 'user', parts: [{ text: entry.user }] });
-        contents.push({ role: 'model', parts: [{ text: entry.model }] });
-    }
-    contents.push({ role: 'user', parts: [{ text: `[${userName}]: ${userInput}` }] });
-
-    let result = null;
-
-    if (openai) {
-        try {
-            result = await generateWithOpenAI(systemPrompt, contents, message, images, userTier, userInput);
-            if (result?.text) openaiLog.info(`Response via OpenAI (${config.openai.model})`);
-        } catch (err) {
-            log.error('OpenAI failed:', err.message);
+        let memories = [];
+        if (guild) {
+            const mem = store.read(`memory-${guild.id}.json`, {});
+            memories = Object.entries(mem).map(([key, entry]) => ({ key, value: entry.value }));
         }
-    }
 
-    if (!result?.text) {
-        try {
-            result = await generateWithGemma(systemPrompt, contents, message, images, userTier, userInput);
-            if (result?.text) gemmaLog.info(`Response via Gemma (${config.ai.model})`);
-        } catch (err) {
-            log.error('Gemma failed:', err.message);
+        let documents = [];
+        if (guild) {
+            const docs = store.read(`documents-${guild.id}.json`, []);
+            documents = docs.map(d => ({ name: d.name }));
         }
-    }
 
-    if (!result?.text) return 'Something failed on my end. Try again.';
+        const systemPrompt = getSystemPrompt(guild, { userTier, userName, memories, documents });
 
-    let text = result.text;
+        const historyFile = guild ? `conversations-${guild.id}-${userId}.json` : `conversations-dm-${userId}.json`;
+        const history = store.read(historyFile, []);
 
-    // Clean up any leaked function calls, chain-of-thought, repetition
-    text = cleanResponse(text);
-    if (!text) return 'Response failed. Try again.';
+        // Only include tool context from the last 3 messages to avoid stale state beliefs
+        const recentHistory = history.slice(-config.maxConversationHistory);
+        const recentToolEntries = recentHistory.slice(-3).filter(e => e.toolContext);
+        const toolSummary = recentToolEntries.map(e => e.toolContext).join(' ');
 
-    // Build tool context summary for history
-    let toolContext = null;
-    if (result.toolLog && result.toolLog.length > 0) {
-        toolContext = result.toolLog.map(t => {
-            const res = t.result?.success ? 'success' : (t.result?.error || JSON.stringify(t.result));
-            return `[Used ${t.tool}: ${res}]`;
-        }).join(' ');
-    }
+        const contents = [];
+        if (toolSummary) {
+            contents.push({ role: 'user', parts: [{ text: `[SYSTEM] Actions from your last few messages (may no longer reflect current state — always use tools to verify): ${toolSummary}` }] });
+            contents.push({ role: 'model', parts: [{ text: 'Understood.' }] });
+        }
+        for (const entry of recentHistory) {
+            contents.push({ role: 'user', parts: [{ text: entry.user }] });
+            contents.push({ role: 'model', parts: [{ text: entry.model }] });
+        }
+        contents.push({ role: 'user', parts: [{ text: `[${userName}]: ${userInput}` }] });
 
-    // Save to conversation history (include tool context so next turn knows what happened)
-    const historyEntry = { user: `[${userName}]: ${userInput}`, model: text };
-    if (toolContext) historyEntry.toolContext = toolContext;
-    const updated = [...history, historyEntry];
-    store.write(historyFile, updated.slice(-config.maxConversationHistory * 2));
+        let result = null;
 
-    // Log to mod channel if tools were used
-    if (guild && result.toolLog && result.toolLog.length > 0) {
-        try {
-            const guildConfig = store.read(`guild-${guild.id}.json`, {});
-            if (guildConfig.modLogChannel) {
-                const logChannel = guild.channels.cache.get(guildConfig.modLogChannel);
-                if (logChannel) {
-                    const toolEntries = result.toolLog.map(t =>
-                        `\`${t.tool}\` by ${userName} — ${t.result?.success ? 'success' : (t.result?.error || 'done')}`
-                    ).join('\n');
-                    await logChannel.send(`**[Ultron Tool Log]**\n${toolEntries}`).catch(() => {});
-                }
+        if (openai) {
+            try {
+                result = await generateWithOpenAI(systemPrompt, contents, message, images, userTier, userInput);
+                if (result?.text) openaiLog.info(`Response via OpenAI (${config.openai.model})`);
+            } catch (err) {
+                log.error('OpenAI failed:', err.message);
             }
-        } catch (_) {}
-    }
+        }
 
-    return text;
+        if (!result?.text) {
+            try {
+                result = await generateWithGemma(systemPrompt, contents, message, images, userTier, userInput);
+                if (result?.text) gemmaLog.info(`Response via Gemma (${config.ai.model})`);
+            } catch (err) {
+                log.error('Gemma failed:', err.message);
+            }
+        }
+
+        if (!result?.text) return 'Something failed on my end. Try again.';
+
+        let text = result.text;
+
+        // Clean up any leaked function calls, chain-of-thought, repetition
+        text = cleanResponse(text);
+        if (!text) return 'Response failed. Try again.';
+
+        // Build tool context summary for history
+        let toolContext = null;
+        if (result.toolLog && result.toolLog.length > 0) {
+            toolContext = result.toolLog.map(t => {
+                const res = t.result?.success ? 'success' : (t.result?.error || JSON.stringify(t.result));
+                return `[Used ${t.tool}: ${res}]`;
+            }).join(' ');
+        }
+
+        // Save to conversation history (include tool context so next turn knows what happened)
+        const historyEntry = { user: `[${userName}]: ${userInput}`, model: text };
+        if (toolContext) historyEntry.toolContext = toolContext;
+        const updated = [...history, historyEntry];
+        store.write(historyFile, updated.slice(-config.maxConversationHistory * 2));
+
+        // Log to mod channel if tools were used
+        if (guild && result.toolLog && result.toolLog.length > 0) {
+            try {
+                const guildConfig = store.read(`guild-${guild.id}.json`, {});
+                if (guildConfig.modLogChannel) {
+                    const logChannel = guild.channels.cache.get(guildConfig.modLogChannel);
+                    if (logChannel) {
+                        const toolEntries = result.toolLog.map(t =>
+                            `\`${t.tool}\` by ${userName} — ${t.result?.success ? 'success' : (t.result?.error || 'done')}`
+                        ).join('\n');
+                        await logChannel.send(`**[Ultron Tool Log]**\n${toolEntries}`).catch(() => {});
+                    }
+                }
+            } catch (_) {}
+        }
+
+        return text;
+    });
 }
 
 module.exports = { generateResponse, selectToolsForMessage, detectToolChoice };

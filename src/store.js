@@ -709,20 +709,121 @@ function removeTempBan(id) {
 
 // ── Guild Snapshot Helpers ──
 
-// better-sqlite3 only accepts: number, string, bigint, Buffer, null.
-// Coerce anything else (boolean, undefined, object, array) to a safe type.
-function sanitize(val) {
-    if (val === null || val === undefined) return null;
-    const t = typeof val;
-    if (t === 'number' || t === 'string' || t === 'bigint') return val;
-    if (t === 'boolean') return val ? 1 : 0;
-    if (Buffer.isBuffer(val)) return val;
-    // arrays, objects, Dates, etc.
-    return String(val);
+function isPlainObject(value) {
+    if (!value || typeof value !== 'object') return false;
+    const proto = Object.getPrototypeOf(value);
+    return proto === Object.prototype || proto === null;
 }
 
-function sanitizedRun(statement, ...args) {
-    return statement.run(...args.map(sanitize));
+function isRawBindable(value) {
+    if (value === null || value === undefined) return true;
+    if (Buffer.isBuffer(value)) return true;
+    const t = typeof value;
+    return t === 'number' || t === 'string' || t === 'bigint';
+}
+
+function coerceSqlValue(value) {
+    if (value === null || value === undefined) return null;
+    if (Buffer.isBuffer(value)) return value;
+
+    const t = typeof value;
+    if (t === 'string' || t === 'bigint') return value;
+    if (t === 'number') return Number.isFinite(value) ? value : null;
+    if (t === 'boolean') return value ? 1 : 0;
+    if (t === 'symbol') return value.description ? `Symbol(${value.description})` : 'Symbol()';
+    if (t === 'function') return `[Function ${value.name || 'anonymous'}]`;
+
+    if (value instanceof Date) {
+        const ms = value.getTime();
+        return Number.isFinite(ms) ? value.toISOString() : null;
+    }
+
+    if (ArrayBuffer.isView(value)) {
+        try {
+            return Buffer.from(value.buffer, value.byteOffset, value.byteLength);
+        } catch (_) {
+            return null;
+        }
+    }
+
+    if (value instanceof ArrayBuffer) {
+        try {
+            return Buffer.from(value);
+        } catch (_) {
+            return null;
+        }
+    }
+
+    if (Array.isArray(value) || isPlainObject(value)) {
+        try {
+            return JSON.stringify(value);
+        } catch (_) {
+            return String(value);
+        }
+    }
+
+    return String(value);
+}
+
+function describeArgTypes(args) {
+    return args.map((value, index) => {
+        if (value === null) return `${index}:null`;
+        if (value === undefined) return `${index}:undefined`;
+        if (Buffer.isBuffer(value)) return `${index}:Buffer`;
+        if (value instanceof Date) return `${index}:Date`;
+        if (Array.isArray(value)) return `${index}:Array`;
+        if (value instanceof ArrayBuffer) return `${index}:ArrayBuffer`;
+        if (ArrayBuffer.isView(value)) return `${index}:${value.constructor?.name || 'TypedArray'}`;
+        return `${index}:${typeof value}`;
+    }).join(',');
+}
+
+function annotateSqlError(error, statementKey, rawArgs, safeArgs) {
+    const firstUnsafe = rawArgs.findIndex(v => !isRawBindable(v));
+    const details = [
+        `stmt=${statementKey || 'unknown'}`,
+        `raw=[${describeArgTypes(rawArgs)}]`,
+        `safe=[${describeArgTypes(safeArgs)}]`
+    ];
+    if (firstUnsafe >= 0) details.push(`firstUnsafeIndex=${firstUnsafe}`);
+    error.message = `${error.message} (${details.join(' ')})`;
+    error.statementKey = statementKey || 'unknown';
+    error.firstUnsafeIndex = firstUnsafe;
+    return error;
+}
+
+function runSafe(statementKey, statement, ...args) {
+    const safeArgs = args.map(coerceSqlValue);
+    try {
+        return statement.run(...safeArgs);
+    } catch (error) {
+        throw annotateSqlError(error, statementKey, args, safeArgs);
+    }
+}
+
+function getSafe(statementKey, statement, ...args) {
+    const safeArgs = args.map(coerceSqlValue);
+    try {
+        return statement.get(...safeArgs);
+    } catch (error) {
+        throw annotateSqlError(error, statementKey, args, safeArgs);
+    }
+}
+
+function allSafe(statementKey, statement, ...args) {
+    const safeArgs = args.map(coerceSqlValue);
+    try {
+        return statement.all(...safeArgs);
+    } catch (error) {
+        throw annotateSqlError(error, statementKey, args, safeArgs);
+    }
+}
+
+function sanitizedRun(statementKey, statement, ...args) {
+    if (typeof statementKey === 'string' && statement && typeof statement.run === 'function') {
+        return runSafe(statementKey, statement, ...args);
+    }
+    return runSafe('snapshot_unknown', statementKey, statement, ...args);
 }
 
 const insertSnapshotTx = db.transaction(snapshot => {
@@ -738,7 +839,7 @@ const insertSnapshotTx = db.transaction(snapshot => {
         )
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     );
-    const info = sanitizedRun(insertSnapshotStmt,
+    const info = sanitizedRun('insert_snapshot', insertSnapshotStmt,
         snapshot.guildId,
         now,
         snapshot.name || null,
@@ -777,7 +878,7 @@ const insertSnapshotTx = db.transaction(snapshot => {
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     );
     for (const ch of snapshot.channels || []) {
-        sanitizedRun(insertChannel,
+        sanitizedRun('insert_snapshot_channel', insertChannel,
             snapshotId,
             ch.id,
             ch.name,
@@ -813,7 +914,7 @@ const insertSnapshotTx = db.transaction(snapshot => {
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     );
     for (const role of snapshot.roles || []) {
-        sanitizedRun(insertRole,
+        sanitizedRun('insert_snapshot_role', insertRole,
             snapshotId,
             role.id,
             role.name,
@@ -834,7 +935,7 @@ const insertSnapshotTx = db.transaction(snapshot => {
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
     );
     for (const emoji of snapshot.emojis || []) {
-        sanitizedRun(insertEmoji,
+        sanitizedRun('insert_snapshot_emoji', insertEmoji,
             snapshotId,
             emoji.id,
             emoji.name,
@@ -853,7 +954,7 @@ const insertSnapshotTx = db.transaction(snapshot => {
          VALUES (?, ?, ?, ?, ?, ?)`
     );
     for (const ow of snapshot.overwrites || []) {
-        sanitizedRun(insertOverwrite,
+        sanitizedRun('insert_snapshot_overwrite', insertOverwrite,
             snapshotId,
             ow.channelId,
             ow.targetId,
@@ -869,7 +970,7 @@ const insertSnapshotTx = db.transaction(snapshot => {
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
     );
     for (const sticker of snapshot.stickers || []) {
-        sanitizedRun(insertSticker,
+        sanitizedRun('insert_snapshot_sticker', insertSticker,
             snapshotId,
             sticker.id,
             sticker.name,
@@ -888,7 +989,7 @@ const insertSnapshotTx = db.transaction(snapshot => {
          VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
     );
     for (const hook of snapshot.webhooks || []) {
-        sanitizedRun(insertWebhook,
+        sanitizedRun('insert_snapshot_webhook', insertWebhook,
             snapshotId,
             hook.id,
             hook.name || null,
@@ -906,7 +1007,7 @@ const insertSnapshotTx = db.transaction(snapshot => {
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     );
     for (const invite of snapshot.invites || []) {
-        sanitizedRun(insertInvite,
+        sanitizedRun('insert_snapshot_invite', insertInvite,
             snapshotId,
             invite.code,
             invite.channelId || null,
@@ -929,7 +1030,7 @@ const insertSnapshotTx = db.transaction(snapshot => {
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
     );
     for (const rule of snapshot.automod || []) {
-        sanitizedRun(insertAutomod,
+        sanitizedRun('insert_snapshot_automod', insertAutomod,
             snapshotId,
             rule.id,
             rule.name || null,
@@ -948,7 +1049,7 @@ const insertSnapshotTx = db.transaction(snapshot => {
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     );
     for (const ev of snapshot.events || []) {
-        sanitizedRun(insertEvent,
+        sanitizedRun('insert_snapshot_event', insertEvent,
             snapshotId,
             ev.id,
             ev.name || null,
@@ -971,7 +1072,7 @@ const insertSnapshotTx = db.transaction(snapshot => {
          VALUES (?, ?, ?, ?, ?, ?)`
     );
     for (const msg of snapshot.messages || []) {
-        sanitizedRun(insertMessage,
+        sanitizedRun('insert_snapshot_message', insertMessage,
             snapshotId,
             msg.channelId,
             msg.messageId,
@@ -987,7 +1088,7 @@ const insertSnapshotTx = db.transaction(snapshot => {
          VALUES (?, ?)`
     );
     for (const feature of snapshot.features || []) {
-        sanitizedRun(insertFeature, snapshotId, feature);
+        sanitizedRun('insert_snapshot_feature', insertFeature, snapshotId, feature);
     }
 
     const insertChannelTag = stmt('insert_snapshot_channel_tag',
@@ -996,7 +1097,7 @@ const insertSnapshotTx = db.transaction(snapshot => {
          VALUES (?, ?, ?, ?, ?, ?, ?)`
     );
     for (const tag of snapshot.channelTags || []) {
-        sanitizedRun(insertChannelTag,
+        sanitizedRun('insert_snapshot_channel_tag', insertChannelTag,
             snapshotId,
             tag.channelId,
             tag.tagId,
@@ -1013,7 +1114,7 @@ const insertSnapshotTx = db.transaction(snapshot => {
          VALUES (?, ?, ?, ?)`
     );
     for (const tag of snapshot.roleTags || []) {
-        sanitizedRun(insertRoleTag,
+        sanitizedRun('insert_snapshot_role_tag', insertRoleTag,
             snapshotId,
             tag.roleId,
             tag.tag,
@@ -1027,7 +1128,7 @@ const insertSnapshotTx = db.transaction(snapshot => {
          VALUES (?, ?, ?, ?, ?, ?, ?)`
     );
     for (const action of snapshot.automodActions || []) {
-        sanitizedRun(insertAutomodAction,
+        sanitizedRun('insert_snapshot_automod_action', insertAutomodAction,
             snapshotId,
             action.ruleId,
             action.index ?? 0,
@@ -1044,7 +1145,7 @@ const insertSnapshotTx = db.transaction(snapshot => {
          VALUES (?, ?, ?, ?, ?)`
     );
     for (const item of snapshot.automodTriggerItems || []) {
-        sanitizedRun(insertAutomodTriggerItem,
+        sanitizedRun('insert_snapshot_automod_trigger_item', insertAutomodTriggerItem,
             snapshotId,
             item.ruleId,
             item.key,
@@ -1059,7 +1160,7 @@ const insertSnapshotTx = db.transaction(snapshot => {
          VALUES (?, ?, ?)`
     );
     for (const entry of snapshot.automodExemptRoles || []) {
-        sanitizedRun(insertAutomodExemptRole,
+        sanitizedRun('insert_snapshot_automod_exempt_role', insertAutomodExemptRole,
             snapshotId,
             entry.ruleId,
             entry.roleId
@@ -1072,7 +1173,7 @@ const insertSnapshotTx = db.transaction(snapshot => {
          VALUES (?, ?, ?)`
     );
     for (const entry of snapshot.automodExemptChannels || []) {
-        sanitizedRun(insertAutomodExemptChannel,
+        sanitizedRun('insert_snapshot_automod_exempt_channel', insertAutomodExemptChannel,
             snapshotId,
             entry.ruleId,
             entry.channelId
@@ -1085,7 +1186,7 @@ const insertSnapshotTx = db.transaction(snapshot => {
          VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
     );
     for (const member of snapshot.members || []) {
-        sanitizedRun(insertMember,
+        sanitizedRun('insert_snapshot_member', insertMember,
             snapshotId,
             member.userId,
             member.nick || null,
@@ -1103,7 +1204,7 @@ const insertSnapshotTx = db.transaction(snapshot => {
          VALUES (?, ?, ?)`
     );
     for (const entry of snapshot.memberRoles || []) {
-        sanitizedRun(insertMemberRole,
+        sanitizedRun('insert_snapshot_member_role', insertMemberRole,
             snapshotId,
             entry.userId,
             entry.roleId
@@ -1120,63 +1221,63 @@ function createGuildSnapshot(snapshot) {
 function hydrateSnapshot(row) {
     if (!row) return null;
 
-    const channels = stmt('snapshot_channels',
+    const channels = allSafe('snapshot_channels', stmt('snapshot_channels',
         'SELECT * FROM guild_snapshot_channels WHERE snapshot_id = ?'
-    ).all(row.id);
-    const roles = stmt('snapshot_roles',
+    ), row.id);
+    const roles = allSafe('snapshot_roles', stmt('snapshot_roles',
         'SELECT * FROM guild_snapshot_roles WHERE snapshot_id = ?'
-    ).all(row.id);
-    const emojis = stmt('snapshot_emojis',
+    ), row.id);
+    const emojis = allSafe('snapshot_emojis', stmt('snapshot_emojis',
         'SELECT * FROM guild_snapshot_emojis WHERE snapshot_id = ?'
-    ).all(row.id);
-    const overwrites = stmt('snapshot_overwrites',
+    ), row.id);
+    const overwrites = allSafe('snapshot_overwrites', stmt('snapshot_overwrites',
         'SELECT * FROM guild_snapshot_channel_overwrites WHERE snapshot_id = ?'
-    ).all(row.id);
-    const stickers = stmt('snapshot_stickers',
+    ), row.id);
+    const stickers = allSafe('snapshot_stickers', stmt('snapshot_stickers',
         'SELECT * FROM guild_snapshot_stickers WHERE snapshot_id = ?'
-    ).all(row.id);
-    const webhooks = stmt('snapshot_webhooks',
+    ), row.id);
+    const webhooks = allSafe('snapshot_webhooks', stmt('snapshot_webhooks',
         'SELECT * FROM guild_snapshot_webhooks WHERE snapshot_id = ?'
-    ).all(row.id);
-    const invites = stmt('snapshot_invites',
+    ), row.id);
+    const invites = allSafe('snapshot_invites', stmt('snapshot_invites',
         'SELECT * FROM guild_snapshot_invites WHERE snapshot_id = ?'
-    ).all(row.id);
-    const automod = stmt('snapshot_automod',
+    ), row.id);
+    const automod = allSafe('snapshot_automod', stmt('snapshot_automod',
         'SELECT * FROM guild_snapshot_automod WHERE snapshot_id = ?'
-    ).all(row.id);
-    const events = stmt('snapshot_events',
+    ), row.id);
+    const events = allSafe('snapshot_events', stmt('snapshot_events',
         'SELECT * FROM guild_snapshot_events WHERE snapshot_id = ?'
-    ).all(row.id);
-    const messages = stmt('snapshot_messages',
+    ), row.id);
+    const messages = allSafe('snapshot_messages', stmt('snapshot_messages',
         'SELECT * FROM guild_snapshot_messages WHERE snapshot_id = ?'
-    ).all(row.id);
-    const features = stmt('snapshot_features',
+    ), row.id);
+    const features = allSafe('snapshot_features', stmt('snapshot_features',
         'SELECT * FROM guild_snapshot_features WHERE snapshot_id = ?'
-    ).all(row.id);
-    const channelTags = stmt('snapshot_channel_tags',
+    ), row.id);
+    const channelTags = allSafe('snapshot_channel_tags', stmt('snapshot_channel_tags',
         'SELECT * FROM guild_snapshot_channel_tags WHERE snapshot_id = ?'
-    ).all(row.id);
-    const roleTags = stmt('snapshot_role_tags',
+    ), row.id);
+    const roleTags = allSafe('snapshot_role_tags', stmt('snapshot_role_tags',
         'SELECT * FROM guild_snapshot_role_tags WHERE snapshot_id = ?'
-    ).all(row.id);
-    const automodActions = stmt('snapshot_automod_actions',
+    ), row.id);
+    const automodActions = allSafe('snapshot_automod_actions', stmt('snapshot_automod_actions',
         'SELECT * FROM guild_snapshot_automod_actions WHERE snapshot_id = ?'
-    ).all(row.id);
-    const automodTriggerItems = stmt('snapshot_automod_trigger_items',
+    ), row.id);
+    const automodTriggerItems = allSafe('snapshot_automod_trigger_items', stmt('snapshot_automod_trigger_items',
         'SELECT * FROM guild_snapshot_automod_trigger_items WHERE snapshot_id = ?'
-    ).all(row.id);
-    const automodExemptRoles = stmt('snapshot_automod_exempt_roles',
+    ), row.id);
+    const automodExemptRoles = allSafe('snapshot_automod_exempt_roles', stmt('snapshot_automod_exempt_roles',
         'SELECT * FROM guild_snapshot_automod_exempt_roles WHERE snapshot_id = ?'
-    ).all(row.id);
-    const automodExemptChannels = stmt('snapshot_automod_exempt_channels',
+    ), row.id);
+    const automodExemptChannels = allSafe('snapshot_automod_exempt_channels', stmt('snapshot_automod_exempt_channels',
         'SELECT * FROM guild_snapshot_automod_exempt_channels WHERE snapshot_id = ?'
-    ).all(row.id);
-    const members = stmt('snapshot_members',
+    ), row.id);
+    const members = allSafe('snapshot_members', stmt('snapshot_members',
         'SELECT * FROM guild_snapshot_members WHERE snapshot_id = ?'
-    ).all(row.id);
-    const memberRoles = stmt('snapshot_member_roles',
+    ), row.id);
+    const memberRoles = allSafe('snapshot_member_roles', stmt('snapshot_member_roles',
         'SELECT * FROM guild_snapshot_member_roles WHERE snapshot_id = ?'
-    ).all(row.id);
+    ), row.id);
 
     return {
         id: row.id,
@@ -1376,34 +1477,34 @@ function hydrateSnapshot(row) {
 }
 
 function getLatestGuildSnapshot(guildId) {
-    const row = stmt('latest_snapshot',
+    const row = getSafe('latest_snapshot', stmt('latest_snapshot',
         'SELECT * FROM guild_snapshots WHERE guild_id = ? ORDER BY id DESC LIMIT 1'
-    ).get(guildId);
+    ), guildId);
     return hydrateSnapshot(row);
 }
 
 function getSnapshotById(snapshotId) {
-    const row = stmt('snapshot_by_id',
+    const row = getSafe('snapshot_by_id', stmt('snapshot_by_id',
         'SELECT * FROM guild_snapshots WHERE id = ?'
-    ).get(snapshotId);
+    ), snapshotId);
     return hydrateSnapshot(row);
 }
 
 function listGuildSnapshots(guildId, limit = 5) {
-    return stmt('list_snapshots',
+    return allSafe('list_snapshots', stmt('list_snapshots',
         'SELECT id, created_at, name, member_count, channel_count, role_count, emoji_count FROM guild_snapshots WHERE guild_id = ? ORDER BY id DESC LIMIT ?'
-    ).all(guildId, limit);
+    ), guildId, limit);
 }
 
 function pruneGuildSnapshots(guildId, keep = 10) {
     if (keep <= 0) return 0;
-    const threshold = stmt('snapshot_prune_threshold',
+    const threshold = getSafe('snapshot_prune_threshold', stmt('snapshot_prune_threshold',
         'SELECT id FROM guild_snapshots WHERE guild_id = ? ORDER BY id DESC LIMIT 1 OFFSET ?'
-    ).get(guildId, keep - 1);
+    ), guildId, keep - 1);
     if (!threshold) return 0;
-    const result = stmt('snapshot_prune',
+    const result = runSafe('snapshot_prune', stmt('snapshot_prune',
         'DELETE FROM guild_snapshots WHERE guild_id = ? AND id < ?'
-    ).run(guildId, threshold.id);
+    ), guildId, threshold.id);
     return result.changes;
 }
 
