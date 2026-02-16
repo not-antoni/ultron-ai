@@ -1,6 +1,7 @@
 const { ChannelType, PermissionsBitField, GuildVerificationLevel, AutoModerationRuleTriggerType, AutoModerationActionType, AutoModerationRuleEventType, GuildScheduledEventPrivacyLevel, GuildScheduledEventEntityType, EmbedBuilder, GuildDefaultMessageNotifications, PollLayoutType, AuditLogEvent } = require('discord.js');
 const config = require('../config');
 const store = require('./store');
+const { toolDeclarations } = require('./tools');
 const { createLogger } = require('./logger');
 const log = createLogger('Ultron');
 
@@ -95,6 +96,216 @@ function parseDuration(str) {
 
 // ── Tiered Permission System ──
 
+function isPlainObject(value) {
+    if (!value || typeof value !== 'object') return false;
+    const proto = Object.getPrototypeOf(value);
+    return proto === Object.prototype || proto === null;
+}
+
+function normalizeSchemaType(type) {
+    if (!type) return 'string';
+    const raw = typeof type === 'string' ? type : String(type);
+    const value = raw.toLowerCase();
+    if (value.includes('string')) return 'string';
+    if (value.includes('number')) return 'number';
+    if (value.includes('integer')) return 'integer';
+    if (value.includes('boolean')) return 'boolean';
+    if (value.includes('array')) return 'array';
+    if (value.includes('object')) return 'object';
+    return 'string';
+}
+
+function isNumberLike(value) {
+    if (typeof value === 'number') return Number.isFinite(value);
+    if (typeof value !== 'string') return false;
+    const text = value.trim();
+    if (!text) return false;
+    return Number.isFinite(Number(text));
+}
+
+function isIntegerLike(value) {
+    if (typeof value === 'number') return Number.isFinite(value) && Number.isInteger(value);
+    if (typeof value !== 'string') return false;
+    const text = value.trim();
+    if (!text) return false;
+    const num = Number(text);
+    return Number.isFinite(num) && Number.isInteger(num);
+}
+
+function isBooleanLike(value) {
+    if (typeof value === 'boolean') return true;
+    if (typeof value === 'number') return value === 0 || value === 1;
+    if (typeof value !== 'string') return false;
+    const text = value.trim().toLowerCase();
+    return ['true', 'false', '1', '0', 'yes', 'no', 'on', 'off'].includes(text);
+}
+
+function validateSchemaValueType(field, value, schemaType) {
+    switch (schemaType) {
+    case 'string':
+        if (typeof value !== 'string') return `"${field}" must be a string.`;
+        return null;
+    case 'number':
+        if (!isNumberLike(value)) return `"${field}" must be a number or numeric string.`;
+        return null;
+    case 'integer':
+        if (!isIntegerLike(value)) return `"${field}" must be an integer or integer string.`;
+        return null;
+    case 'boolean':
+        if (!isBooleanLike(value)) return `"${field}" must be a boolean value.`;
+        return null;
+    case 'array':
+        if (!Array.isArray(value)) return `"${field}" must be an array.`;
+        return null;
+    case 'object':
+        if (!isPlainObject(value)) return `"${field}" must be an object.`;
+        return null;
+    default:
+        return null;
+    }
+}
+
+function validateEnumValue(field, value, enumValues) {
+    if (value === undefined || value === null) return null;
+    const allowed = new Set(enumValues.map(v => String(v).toLowerCase()));
+    const normalized = String(value).toLowerCase();
+    if (!allowed.has(normalized)) {
+        return `"${field}" must be one of: ${enumValues.join(', ')}.`;
+    }
+    return null;
+}
+
+const TOOL_DECLARATION_MAP = new Map(toolDeclarations.map(decl => [decl.name, decl]));
+
+const TOOL_ASSET_URL_FIELDS = Object.freeze({
+    addEmoji: ['url'],
+    addSticker: ['url'],
+    updateServerIcon: ['url'],
+    setServerBanner: ['url']
+});
+
+const URL_PLACEHOLDERS = new Set([
+    '<not provided>',
+    'not provided',
+    '<none>',
+    'none',
+    '<null>',
+    'null',
+    '<undefined>',
+    'undefined',
+    'n/a',
+    'na',
+    'tbd'
+]);
+
+function isPrivateOrLocalHost(hostname) {
+    const host = hostname.toLowerCase();
+    const unwrapped = host.replace(/^\[/, '').replace(/\]$/, '');
+    if (!unwrapped) return true;
+    if (unwrapped === 'localhost' || unwrapped.endsWith('.local') || unwrapped.endsWith('.internal')) return true;
+    if (unwrapped === '::1' || unwrapped.startsWith('fc') || unwrapped.startsWith('fd') || unwrapped.startsWith('fe80:')) return true;
+    if (unwrapped === '127.0.0.1') return true;
+
+    const ipv4 = unwrapped.split('.');
+    if (ipv4.length === 4 && ipv4.every(part => /^\d+$/.test(part))) {
+        const [a, b] = ipv4.map(part => Number(part));
+        if (a === 10) return true;
+        if (a === 127) return true;
+        if (a === 169 && b === 254) return true;
+        if (a === 172 && b >= 16 && b <= 31) return true;
+        if (a === 192 && b === 168) return true;
+        if (a === 0) return true;
+    }
+
+    return false;
+}
+
+function validateHttpsAssetUrl(value, fieldName = 'url') {
+    if (typeof value !== 'string') return `"${fieldName}" must be a string HTTPS URL.`;
+    const raw = value.trim();
+    if (!raw) return `"${fieldName}" cannot be empty.`;
+
+    const placeholder = raw.toLowerCase().replace(/\s+/g, ' ');
+    if (URL_PLACEHOLDERS.has(placeholder) || /^<[^>]+>$/.test(raw)) {
+        return `"${fieldName}" contains a placeholder value.`;
+    }
+
+    if (/^(?:[a-zA-Z]:[\\/]|[\\/]{1,2}|\.{1,2}[\\/]|~[\\/])/.test(raw)) {
+        return `"${fieldName}" must be an HTTPS URL, not a local path.`;
+    }
+
+    let parsed;
+    try {
+        parsed = new URL(raw);
+    } catch (_) {
+        return `"${fieldName}" must be a valid absolute HTTPS URL.`;
+    }
+
+    if (parsed.protocol !== 'https:') {
+        return `"${fieldName}" must use HTTPS.`;
+    }
+    if (!parsed.hostname) {
+        return `"${fieldName}" must include a hostname.`;
+    }
+    if (parsed.username || parsed.password) {
+        return `"${fieldName}" must not contain credentials.`;
+    }
+    if (isPrivateOrLocalHost(parsed.hostname)) {
+        return `"${fieldName}" cannot target localhost or private network addresses.`;
+    }
+    return null;
+}
+
+function validateToolArgs(toolName, args) {
+    const safeArgs = args === undefined ? {} : args;
+    if (!isPlainObject(safeArgs)) {
+        return { ok: false, reason: 'Arguments must be a JSON object.' };
+    }
+
+    const decl = TOOL_DECLARATION_MAP.get(toolName);
+    if (!decl) return { ok: true, args: safeArgs };
+
+    const properties = decl.parameters?.properties || {};
+    const required = Array.isArray(decl.parameters?.required) ? decl.parameters.required : [];
+    const issues = [];
+
+    for (const field of required) {
+        const value = safeArgs[field];
+        if (value === undefined || value === null || (typeof value === 'string' && value.trim() === '')) {
+            issues.push(`"${field}" is required.`);
+        }
+    }
+
+    for (const [field, value] of Object.entries(safeArgs)) {
+        const schema = properties[field];
+        if (!schema || value === undefined || value === null) continue;
+
+        const typeError = validateSchemaValueType(field, value, normalizeSchemaType(schema.type));
+        if (typeError) {
+            issues.push(typeError);
+            continue;
+        }
+
+        if (Array.isArray(schema.enum) && schema.enum.length > 0) {
+            const enumError = validateEnumValue(field, value, schema.enum);
+            if (enumError) issues.push(enumError);
+        }
+    }
+
+    const urlFields = TOOL_ASSET_URL_FIELDS[toolName] || [];
+    for (const field of urlFields) {
+        if (!(field in safeArgs)) continue;
+        const urlError = validateHttpsAssetUrl(safeArgs[field], field);
+        if (urlError) issues.push(urlError);
+    }
+
+    if (issues.length > 0) {
+        return { ok: false, reason: issues.join(' ') };
+    }
+
+    return { ok: true, args: safeArgs };
+}
+
 const TIERS = { everyone: 1, moderator: 2, admin: 3 };
 
 const TOOL_TIERS = {
@@ -110,7 +321,7 @@ const TOOL_TIERS = {
     // Tier 2 — Moderator (constructive / moderate actions)
     createChannel: 2, renameChannel: 2, setChannelTopic: 2,
     createThread: 2, deleteThread: 2, archiveThread: 2, unarchiveThread: 2, addThreadMember: 2,
-    addEmoji: 2, removeEmoji: 2,
+    removeEmoji: 2,
     createRole: 2, assignRole: 2, removeRole: 2, editRole: 2,
     timeoutMember: 2, untimeoutMember: 2, setNickname: 2, setSlowmode: 2,
     moveToVoice: 2, voiceMute: 2, voiceDeafen: 2,
@@ -127,12 +338,12 @@ const TOOL_TIERS = {
     setupReactionRole: 2, removeReactionRole: 2,
     setWelcomeChannel: 2, setGoodbyeChannel: 2, setAutoRole: 2,
     createForumPost: 2, createStageInstance: 2, endStageInstance: 2,
-    addSticker: 2, bulkAssignRole: 2, setVoiceBitrate: 2, setVoiceRegion: 2,
+    bulkAssignRole: 2, setVoiceBitrate: 2, setVoiceRegion: 2,
 
     // Tier 3 — Admin (destructive / dangerous)
     kickMember: 3, banMember: 3, unbanMember: 3, disconnectFromVoice: 3,
     deleteChannel: 3, deleteRole: 3, purgeMessages: 3,
-    updateServerName: 3, updateServerIcon: 3, setVerificationLevel: 3,
+    updateServerName: 3, updateServerIcon: 3, setVerificationLevel: 3, addEmoji: 3, addSticker: 3,
     deleteInvite: 3, createAutomodRule: 3, deleteAutomodRule: 3,
     deleteWebhook: 3, deleteDocument: 3, tempBan: 3, removeSticker: 3,
     setAFKChannel: 3, setDefaultNotifications: 3, setServerBanner: 3
@@ -1393,9 +1604,11 @@ async function executeTool(name, args, message) {
     if (!message.guild) return { error: 'Server actions require a server context.' };
     const fn = tools[name];
     if (!fn) return { error: `Unknown tool: ${name}` };
+    const userId = message.author?.id || 'unknown';
+    const toolArgs = args === undefined ? {} : args;
 
     // Per-user rate limiting
-    if (!checkRateLimit(message.author.id)) {
+    if (!checkRateLimit(userId)) {
         return { error: `Rate limited. Max ${RATE_LIMIT_MAX} tool calls per ${RATE_LIMIT_WINDOW / 1000}s.` };
     }
 
@@ -1403,14 +1616,22 @@ async function executeTool(name, args, message) {
     const tierCheck = checkTier(name, message);
     if (!tierCheck.allowed) return { error: tierCheck.error };
 
+    const validation = validateToolArgs(name, toolArgs);
+    if (!validation.ok) {
+        const errorResult = { error: `Invalid arguments for "${name}": ${validation.reason}` };
+        log.warn(`Tool validation rejected guild=${message.guild.id} user=${userId} tool=${name}: ${validation.reason}`);
+        store.logAudit(message.guild.id, userId, name, toolArgs, errorResult);
+        return errorResult;
+    }
+
     try {
-        const result = await withToolTimeout(fn(args || {}, message), name);
-        store.logAudit(message.guild.id, message.author.id, name, args || {}, result);
+        const result = await withToolTimeout(fn(validation.args, message), name);
+        store.logAudit(message.guild.id, userId, name, validation.args, result);
         return result;
     } catch (err) {
         log.error(`Tool ${name} error:`, err.message);
         const errorResult = { error: `Action failed: ${err.message}` };
-        store.logAudit(message.guild.id, message.author.id, name, args || {}, errorResult);
+        store.logAudit(message.guild.id, userId, name, validation.args, errorResult);
         return errorResult;
     }
 }

@@ -478,6 +478,23 @@ function stableStringify(value) {
     return `{${parts.join(',')}}`;
 }
 
+function isPlainObject(value) {
+    if (!value || typeof value !== 'object') return false;
+    const proto = Object.getPrototypeOf(value);
+    return proto === Object.prototype || proto === null;
+}
+
+function normalizeToolCall(name, args) {
+    const normalizedName = typeof name === 'string' ? name.trim() : '';
+    if (!normalizedName) {
+        return { ok: false, error: 'Malformed tool call: missing tool name.' };
+    }
+    if (!isPlainObject(args)) {
+        return { ok: false, error: `Malformed tool call for "${normalizedName}": arguments must be an object.` };
+    }
+    return { ok: true, name: normalizedName, args };
+}
+
 function buildOpenAIMessages(systemPrompt, contents, images) {
     const messages = [{ role: 'system', content: systemPrompt }];
     const lastIdx = contents.length - 1;
@@ -565,17 +582,22 @@ async function generateWithOpenAI(systemPrompt, contents, message, images = [], 
 
         const roundResultCache = new Map();
         for (const tc of toolCalls) {
-            const name = tc.function?.name;
-            let args = {};
-            try { args = JSON.parse(tc.function?.arguments || '{}'); } catch (_) {}
-            openaiLog.info(`Tool: ${name}(${JSON.stringify(args)})`);
+            const rawName = tc.function?.name;
+            let parsedArgs = {};
+            try { parsedArgs = JSON.parse(tc.function?.arguments || '{}'); } catch (_) {}
+            const normalized = normalizeToolCall(rawName, parsedArgs);
+            const name = normalized.ok ? normalized.name : String(rawName || '').trim();
+            const args = normalized.ok ? normalized.args : {};
+            openaiLog.info(`Tool: ${name || 'invalid'}(${JSON.stringify(args)})`);
 
-            const callKey = `${name}:${stableStringify(args)}`;
+            const callKey = `${name || 'invalid'}:${stableStringify(args)}`;
             const seenCount = (repeatedToolCalls.get(callKey) || 0) + 1;
             repeatedToolCalls.set(callKey, seenCount);
 
             let toolResult;
-            if (seenCount > TOOL_REPEAT_GUARD) {
+            if (!normalized.ok) {
+                toolResult = { error: normalized.error };
+            } else if (seenCount > TOOL_REPEAT_GUARD) {
                 toolResult = { error: `Repeated tool call blocked after ${TOOL_REPEAT_GUARD} duplicate calls in this turn.` };
             } else if (roundResultCache.has(callKey)) {
                 toolResult = roundResultCache.get(callKey);
@@ -588,7 +610,7 @@ async function generateWithOpenAI(systemPrompt, contents, message, images = [], 
                 roundResultCache.set(callKey, toolResult);
             }
 
-            toolLog.push({ tool: name, args, result: toolResult });
+            toolLog.push({ tool: name || 'invalid', args, result: toolResult });
             messages.push({
                 role: 'tool',
                 tool_call_id: tc.id,
@@ -668,26 +690,32 @@ async function generateWithGemma(systemPrompt, contents, message, images = [], u
         const results = [];
         const roundResultCache = new Map();
         for (const lc of leakedCalls) {
-            gemmaLog.info(`Tool (text): ${lc.name}(${JSON.stringify(lc.args)})`);
-            const callKey = `${lc.name}:${stableStringify(lc.args || {})}`;
+            const normalized = normalizeToolCall(lc.name, lc.args);
+            const name = normalized.ok ? normalized.name : String(lc.name || '').trim();
+            const args = normalized.ok ? normalized.args : {};
+
+            gemmaLog.info(`Tool (text): ${name || 'invalid'}(${JSON.stringify(args)})`);
+            const callKey = `${name || 'invalid'}:${stableStringify(args)}`;
             const seenCount = (repeatedToolCalls.get(callKey) || 0) + 1;
             repeatedToolCalls.set(callKey, seenCount);
 
             let toolResult;
-            if (seenCount > TOOL_REPEAT_GUARD) {
+            if (!normalized.ok) {
+                toolResult = { error: normalized.error };
+            } else if (seenCount > TOOL_REPEAT_GUARD) {
                 toolResult = { error: `Repeated tool call blocked after ${TOOL_REPEAT_GUARD} duplicate calls in this turn.` };
             } else if (roundResultCache.has(callKey)) {
                 toolResult = roundResultCache.get(callKey);
             } else {
                 try {
-                    toolResult = await executeTool(lc.name, lc.args, message);
+                    toolResult = await executeTool(name, args, message);
                 } catch (err) {
                     toolResult = { error: err.message };
                 }
                 roundResultCache.set(callKey, toolResult);
             }
-            toolLog.push({ tool: lc.name, args: lc.args, result: toolResult });
-            results.push({ name: lc.name, result: toolResult });
+            toolLog.push({ tool: name || 'invalid', args, result: toolResult });
+            results.push({ name: name || 'invalid', result: toolResult });
         }
 
         const resultSummary = results.map(r => `${r.name}: ${JSON.stringify(r.result)}`).join('\n');

@@ -100,6 +100,19 @@ describe('Permission System', () => {
         assert(result.error);
         assert(result.error.includes('Insufficient'));
     });
+
+    test('Emoji/sticker uploads require tier 3', async () => {
+        assert.strictEqual(TOOL_TIERS.addEmoji, 3);
+        assert.strictEqual(TOOL_TIERS.addSticker, 3);
+
+        const emojiResult = await executeTool('addEmoji', { name: 'locked', url: 'https://example.com/emoji.png' }, msg(env.members.mod));
+        assert(emojiResult.error);
+        assert(emojiResult.error.includes('Insufficient'));
+
+        const stickerResult = await executeTool('addSticker', { name: 'locked', url: 'https://example.com/sticker.png', tags: 'ok' }, msg(env.members.mod));
+        assert(stickerResult.error);
+        assert(stickerResult.error.includes('Insufficient'));
+    });
 });
 
 // ═══════════════════════════════════════════════════════════════
@@ -119,6 +132,12 @@ describe('Error Handling', () => {
         const result = await executeTool('createChannel', { name: 'test' }, { guild: null });
         assert(result.error);
         assert(result.error.includes('server context'));
+    });
+
+    test('Non-object tool args are rejected', async () => {
+        const result = await executeTool('createChannel', 'name=test&type=text', msg());
+        assert(result.error);
+        assert(result.error.includes('Invalid arguments'));
     });
 });
 
@@ -286,11 +305,18 @@ describe('Emoji Management', () => {
         assert.strictEqual(result.emoji, 'test_emoji');
     });
 
+    test('addEmoji placeholder URL rejected', async () => {
+        const result = await executeTool('addEmoji', { name: 'bad_emoji', url: '<not provided>' }, msg());
+        assert(result.error);
+        assert(result.error.includes('Invalid arguments'));
+        assert.strictEqual(env.guild.emojis.cache.size, 0);
+    });
     test('removeEmoji — success', async () => {
         await executeTool('addEmoji', { name: 'to_remove', url: 'https://example.com/emoji.png' }, msg());
         const result = await executeTool('removeEmoji', { name: 'to_remove' }, msg());
         assert.strictEqual(result.success, true);
     });
+
 
     test('removeEmoji — not found', async () => {
         const result = await executeTool('removeEmoji', { name: 'nonexistent' }, msg());
@@ -565,66 +591,78 @@ describe('Rich Messages', () => {
 describe('Guild Settings', () => {
     beforeEach(resetEnv);
 
-    test('updateServerName — success', async () => {
+    test('updateServerName - success', async () => {
         const result = await executeTool('updateServerName', { name: 'New Name' }, msg());
         assert.strictEqual(result.success, true);
         assert.strictEqual(result.name, 'New Name');
     });
 
-    test('updateServerIcon — success', async () => {
+    test('updateServerIcon - success', async () => {
         const result = await executeTool('updateServerIcon', { url: 'https://example.com/icon.png' }, msg());
         assert.strictEqual(result.success, true);
     });
 
-    test('setVerificationLevel — success', async () => {
+    test('updateServerIcon rejects non-https URL', async () => {
+        const result = await executeTool('updateServerIcon', { url: 'http://example.com/icon.png' }, msg());
+        assert(result.error);
+        assert(result.error.includes('Invalid arguments'));
+    });
+
+    test('setVerificationLevel - success', async () => {
         const result = await executeTool('setVerificationLevel', { level: 'high' }, msg());
         assert.strictEqual(result.success, true);
     });
 
-    test('setVerificationLevel — invalid', async () => {
+    test('setVerificationLevel - invalid', async () => {
         const result = await executeTool('setVerificationLevel', { level: 'extreme' }, msg());
         assert(result.error);
     });
 
-    test('setSystemChannel — success', async () => {
+    test('setSystemChannel - success', async () => {
         const result = await executeTool('setSystemChannel', { channel: 'general' }, msg());
         assert.strictEqual(result.success, true);
     });
 
-    test('setRulesChannel — success', async () => {
+    test('setRulesChannel - success', async () => {
         const result = await executeTool('setRulesChannel', { channel: 'announcements' }, msg());
         assert.strictEqual(result.success, true);
     });
 
-    test('setAFKChannel — voice channel', async () => {
+    test('setAFKChannel - voice channel', async () => {
         const result = await executeTool('setAFKChannel', { channel: 'voice-chat' }, msg());
         assert.strictEqual(result.success, true);
     });
 
-    test('setAFKChannel — non-voice channel', async () => {
+    test('setAFKChannel - non-voice channel', async () => {
         const result = await executeTool('setAFKChannel', { channel: 'general' }, msg());
         assert(result.error);
         assert(result.error.includes('not a voice channel'));
     });
 
-    test('setDefaultNotifications — mentions', async () => {
+    test('setDefaultNotifications - mentions', async () => {
         const result = await executeTool('setDefaultNotifications', { level: 'mentions' }, msg());
         assert.strictEqual(result.success, true);
     });
 
-    test('setServerBanner — success (boost tier 2)', async () => {
+    test('setServerBanner - success (boost tier 2)', async () => {
         const result = await executeTool('setServerBanner', { url: 'https://example.com/banner.png' }, msg());
         assert.strictEqual(result.success, true);
     });
 
-    test('setServerBanner — low boost tier', async () => {
+    test('setServerBanner - low boost tier', async () => {
         env.guild.premiumTier = 1;
         const result = await executeTool('setServerBanner', { url: 'https://example.com/banner.png' }, msg());
         assert(result.error);
         assert(result.error.includes('boost level'));
     });
 
-    test('getServerInfo — returns full info', async () => {
+    test('setServerBanner rejects private-host URL', async () => {
+        const result = await executeTool('setServerBanner', { url: 'https://127.0.0.1/banner.png' }, msg());
+        assert(result.error);
+        assert(result.error.includes('Invalid arguments'));
+    });
+
+    test('getServerInfo - returns full info', async () => {
         const result = await executeTool('getServerInfo', {}, msg());
         assert.strictEqual(result.name, 'Test Guild');
         assert.strictEqual(result.memberCount, 100);
@@ -633,8 +671,6 @@ describe('Guild Settings', () => {
         assert(result.createdAt);
     });
 });
-
-// ═══════════════════════════════════════════════════════════════
 // Invites (3 tools)
 // ═══════════════════════════════════════════════════════════════
 
@@ -1355,7 +1391,7 @@ describe('Stage Channel Tools', () => {
 describe('Sticker Management', () => {
     beforeEach(resetEnv);
 
-    test('addSticker — success', async () => {
+    test('addSticker - success', async () => {
         const result = await executeTool('addSticker', {
             name: 'cool', url: 'https://example.com/sticker.png', tags: 'thumbsup'
         }, msg());
@@ -1363,7 +1399,16 @@ describe('Sticker Management', () => {
         assert.strictEqual(result.name, 'cool');
     });
 
-    test('removeSticker — success', async () => {
+    test('addSticker rejects local path URL', async () => {
+        const result = await executeTool('addSticker', {
+            name: 'bad', url: 'C:\\tmp\\sticker.png', tags: 'thumbsup'
+        }, msg());
+        assert(result.error);
+        assert(result.error.includes('Invalid arguments'));
+        assert.strictEqual(env.guild.stickers.cache.size, 0);
+    });
+
+    test('removeSticker - success', async () => {
         await executeTool('addSticker', {
             name: 'cool', url: 'https://example.com/sticker.png', tags: 'thumbsup'
         }, msg());
@@ -1371,12 +1416,12 @@ describe('Sticker Management', () => {
         assert.ok(result.success);
     });
 
-    test('removeSticker — not found', async () => {
+    test('removeSticker - not found', async () => {
         const result = await executeTool('removeSticker', { name: 'nonexistent' }, msg());
         assert.ok(result.error);
     });
 
-    test('listStickers — returns list', async () => {
+    test('listStickers - returns list', async () => {
         await executeTool('addSticker', {
             name: 'stickerA', url: 'https://example.com/a.png', tags: 'wave'
         }, msg());
@@ -1385,8 +1430,6 @@ describe('Sticker Management', () => {
         assert.ok(result.total >= 1);
     });
 });
-
-// ═══════════════════════════════════════════════════════════════
 // Temp Ban
 // ═══════════════════════════════════════════════════════════════
 
