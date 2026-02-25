@@ -40,6 +40,14 @@ const EMOJI_DELETE_THRESHOLD = securityCfg.emojiDeleteThreshold ?? 5;
 const EMOJI_CREATE_THRESHOLD = securityCfg.emojiCreateThreshold ?? 8;
 const EMOJI_RENAME_THRESHOLD = securityCfg.emojiRenameThreshold ?? 5;
 const BAN_THRESHOLD = securityCfg.banThreshold ?? 3;
+const ALERT_DM_MODE = normalizeAlertDmMode(securityCfg.alertDmMode);
+const ALERT_DM_TYPES = new Set(
+    Array.isArray(securityCfg.alertDmTypes)
+        ? securityCfg.alertDmTypes.map(normalizeToken).filter(Boolean)
+        : []
+);
+const ALERT_DM_TIMEOUT_MS = toPositiveInt(securityCfg.alertDmTimeoutMs, 8000, 1000);
+const ALERT_DM_CONCURRENCY = toPositiveInt(securityCfg.alertDmConcurrency, 4, 1);
 
 // Snapshot diff thresholds (for passive scans)
 const DIFF_THRESHOLDS = {
@@ -92,6 +100,85 @@ function shouldAlert(guildId, type) {
     if (last && now - last < ALERT_COOLDOWN_MS) return false;
     alertCooldowns.set(key, now);
     return true;
+}
+
+function normalizeToken(value) {
+    if (value === null || value === undefined) return '';
+    return String(value).trim().toLowerCase();
+}
+
+function normalizeAlertDmMode(value) {
+    const mode = normalizeToken(value);
+    if (mode === 'all' || mode === 'critical_and_raid') return mode;
+    return 'raid_only';
+}
+
+function normalizeUserId(value) {
+    const id = String(value || '').trim();
+    if (!id) return null;
+    return /^\d+$/.test(id) ? id : null;
+}
+
+function toPositiveInt(value, fallback, min = 1) {
+    const num = Number(value);
+    if (!Number.isFinite(num)) return fallback;
+    return Math.max(min, Math.trunc(num));
+}
+
+function resolveDmAlertPolicy(cfg = securityCfg) {
+    const mode = normalizeAlertDmMode(cfg.alertDmMode);
+    const allowlist = new Set(
+        Array.isArray(cfg.alertDmTypes)
+            ? cfg.alertDmTypes.map(normalizeToken).filter(Boolean)
+            : []
+    );
+    return { mode, allowlist };
+}
+
+function shouldDmAlert(payload, cfg = null) {
+    const type = normalizeToken(payload?.type);
+    if (!type) return false;
+
+    const policy = cfg ? resolveDmAlertPolicy(cfg) : { mode: ALERT_DM_MODE, allowlist: ALERT_DM_TYPES };
+    if (policy.allowlist.size > 0) return policy.allowlist.has(type);
+
+    if (policy.mode === 'all') return true;
+    if (policy.mode === 'critical_and_raid') {
+        return type === 'raid-join' || normalizeToken(payload?.severity) === 'critical';
+    }
+    return type === 'raid-join';
+}
+
+async function withTimeout(task, timeoutMs, label) {
+    let timer = null;
+    const timeout = new Promise((_, reject) => {
+        timer = setTimeout(() => {
+            reject(new Error(`${label} timed out after ${timeoutMs}ms`));
+        }, timeoutMs);
+    });
+    try {
+        return await Promise.race([Promise.resolve(task), timeout]);
+    } finally {
+        if (timer) clearTimeout(timer);
+    }
+}
+
+async function runWithConcurrency(items, concurrency, worker) {
+    if (!Array.isArray(items) || items.length === 0) return;
+    const count = Math.min(concurrency, items.length);
+    let cursor = 0;
+    const workers = [];
+    for (let i = 0; i < count; i += 1) {
+        workers.push((async () => {
+            while (true) {
+                const index = cursor;
+                cursor += 1;
+                if (index >= items.length) return;
+                await worker(items[index], index);
+            }
+        })());
+    }
+    await Promise.allSettled(workers);
 }
 
 function markSnapshotPhase(error, phase, guildId) {
@@ -2402,39 +2489,109 @@ async function sendAlert(guild, payload) {
     const content = `${header}\n${body}`;
 
     const recipients = new Map();
-    const owner = await guild.fetchOwner().catch(() => null);
-    if (owner?.user) recipients.set(owner.id, owner.user);
+    let skippedInvalid = 0;
+    let skippedDuplicate = 0;
+    let failedUserFetches = 0;
 
-    const botAdmins = guildConfig.botAdmins || [];
-    for (const id of botAdmins) {
-        if (recipients.has(id)) continue;
-        const user = await guild.client.users.fetch(id).catch(() => null);
-        if (user) recipients.set(id, user);
+    const addRecipient = (user) => {
+        const id = normalizeUserId(user?.id);
+        if (!id) return 'invalid';
+        if (recipients.has(id)) return 'duplicate';
+        recipients.set(id, user);
+        return 'added';
+    };
+
+    const owner = await withTimeout(
+        guild.fetchOwner().catch(() => null),
+        ALERT_DM_TIMEOUT_MS,
+        `owner lookup guild=${guild.id}`
+    ).catch(() => null);
+    if (owner?.user) {
+        const result = addRecipient(owner.user);
+        if (result === 'invalid') skippedInvalid += 1;
     }
 
+    const botAdmins = Array.isArray(guildConfig.botAdmins) ? guildConfig.botAdmins : [];
+    const uniqueBotAdminIds = [];
+    const seenBotAdmins = new Set();
+    for (const rawId of botAdmins) {
+        const id = normalizeUserId(rawId);
+        if (!id) {
+            skippedInvalid += 1;
+            continue;
+        }
+        if (seenBotAdmins.has(id) || recipients.has(id)) {
+            skippedDuplicate += 1;
+            continue;
+        }
+        seenBotAdmins.add(id);
+        uniqueBotAdminIds.push(id);
+    }
+
+    await runWithConcurrency(uniqueBotAdminIds, ALERT_DM_CONCURRENCY, async (id) => {
+        const user = await withTimeout(
+            guild.client.users.fetch(id).catch(() => null),
+            ALERT_DM_TIMEOUT_MS,
+            `admin lookup user=${id}`
+        ).catch(() => null);
+        if (!user) {
+            failedUserFetches += 1;
+            return;
+        }
+        const result = addRecipient(user);
+        if (result === 'invalid') skippedInvalid += 1;
+        else if (result === 'duplicate') skippedDuplicate += 1;
+    });
+
     try {
-        await guild.members.fetch().catch(() => {});
+        await withTimeout(
+            guild.members.fetch().catch(() => {}),
+            ALERT_DM_TIMEOUT_MS,
+            `member cache refresh guild=${guild.id}`
+        );
         const admins = guild.members.cache.filter(m =>
             !m.user.bot && m.permissions.has(PermissionFlagsBits.Administrator)
         );
         let added = 0;
         for (const [, member] of admins) {
-            if (recipients.has(member.id)) continue;
-            recipients.set(member.id, member.user);
-            added += 1;
             if (added >= 10) break;
+            const result = addRecipient(member.user);
+            if (result === 'added') added += 1;
+            else if (result === 'invalid') skippedInvalid += 1;
+            else if (result === 'duplicate') skippedDuplicate += 1;
         }
-    } catch (_) {}
-
-    const sendTasks = [];
-    for (const [, user] of recipients) {
-        sendTasks.push(
-            user.createDM()
-                .then(dm => dm.send(content))
-                .catch(() => {})
-        );
+    } catch (err) {
+        log.warn(`Admin scan failed guild=${guild.id} type=${payload.type}: ${err.message}`);
     }
-    await Promise.allSettled(sendTasks);
+
+    const users = [...recipients.values()];
+    const stats = { attempted: 0, sent: 0, failed: 0 };
+    await runWithConcurrency(users, ALERT_DM_CONCURRENCY, async (user) => {
+        stats.attempted += 1;
+        try {
+            const dm = await withTimeout(
+                user.createDM(),
+                ALERT_DM_TIMEOUT_MS,
+                `dm open user=${user.id}`
+            );
+            if (!dm || typeof dm.send !== 'function') {
+                throw new Error('DM channel unavailable');
+            }
+            await withTimeout(
+                dm.send(content),
+                ALERT_DM_TIMEOUT_MS,
+                `dm send user=${user.id}`
+            );
+            stats.sent += 1;
+        } catch (err) {
+            stats.failed += 1;
+            log.warn(`Alert DM failed guild=${guild.id} type=${payload.type} user=${user?.id || 'unknown'}: ${err.message}`);
+        }
+    });
+
+    const summary = `Alert DM dispatch guild=${guild.id} type=${payload.type} recipients=${users.length} attempted=${stats.attempted} sent=${stats.sent} failed=${stats.failed} skippedInvalid=${skippedInvalid} skippedDuplicate=${skippedDuplicate} userFetchFailed=${failedUserFetches}`;
+    if (stats.failed > 0 || failedUserFetches > 0) log.warn(summary);
+    else log.info(summary);
 }
 
 async function raiseAlert(guild, payload) {
@@ -2446,7 +2603,9 @@ async function raiseAlert(guild, payload) {
     }
     store.logSecurityEvent(guild.id, payload.type, payload.severity, payload.summary, payload.details || null);
     const details = payload.details ? `${payload.details}${restoreNotes}` : (restoreNotes.trim() || null);
-    await sendAlert(guild, { ...payload, details });
+    const alertPayload = { ...payload, details };
+    if (!shouldDmAlert(alertPayload)) return;
+    await sendAlert(guild, alertPayload);
 }
 
 // ── Passive Snapshot Scan ──
@@ -2807,6 +2966,10 @@ module.exports = {
     handleGuildBanAdd,
     _internal: {
         normalizeSnapshot,
-        markSnapshotPhase
+        markSnapshotPhase,
+        shouldDmAlert,
+        raiseAlert,
+        sendAlert,
+        resolveDmAlertPolicy
     }
 };

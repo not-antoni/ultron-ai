@@ -61,6 +61,10 @@ module.exports = {
         snapshotEmojiAssetConcurrency: parseInt(process.env.SECURITY_SNAPSHOT_EMOJI_ASSET_CONCURRENCY || '4', 10),
         snapshotEmojiAssetSize: parseInt(process.env.SECURITY_SNAPSHOT_EMOJI_ASSET_SIZE || '128', 10),
         alertCooldownMs: parseInt(process.env.SECURITY_ALERT_COOLDOWN_MS || '300000', 10),
+        alertDmMode: (process.env.SECURITY_ALERT_DM_MODE || 'raid_only').trim().toLowerCase(),
+        alertDmTypes: parseList(process.env.SECURITY_ALERT_DM_TYPES).map(v => v.toLowerCase()),
+        alertDmTimeoutMs: parseInt(process.env.SECURITY_ALERT_DM_TIMEOUT_MS || '8000', 10),
+        alertDmConcurrency: parseInt(process.env.SECURITY_ALERT_DM_CONCURRENCY || '4', 10),
         auditLogWindowMs: parseInt(process.env.SECURITY_AUDIT_LOG_WINDOW_MS || '45000', 10),
         eventWindowMs: parseInt(process.env.SECURITY_EVENT_WINDOW_MS || '60000', 10),
         raidJoinWindowMs: parseInt(process.env.SECURITY_RAID_JOIN_WINDOW_MS || '120000', 10),
@@ -89,6 +93,11 @@ module.exports = {
     aiToolTimeoutMs: parseInt(process.env.AI_TOOL_TIMEOUT_MS || '12000', 10),
     aiMaxConcurrentRequests: parseInt(process.env.AI_MAX_CONCURRENT_REQUESTS || '4', 10),
     aiToolRepeatGuard: parseInt(process.env.AI_TOOL_REPEAT_GUARD || '2', 10),
+    aiThinkingMode: (process.env.AI_THINKING_MODE || 'auto').trim().toLowerCase(),
+    aiThinkingComplexityMinSteps: parseInt(process.env.AI_THINKING_COMPLEXITY_MIN_STEPS || '2', 10),
+    aiThinkingMaxPlanSteps: parseInt(process.env.AI_THINKING_MAX_PLAN_STEPS || '6', 10),
+    aiThinkingPreflight: parseBool(process.env.AI_THINKING_PREFLIGHT, true),
+    aiThinkingStopOnFailure: parseBool(process.env.AI_THINKING_STOP_ON_FAILURE, true),
     logging: {
         level: process.env.LOG_LEVEL || 'info',
         file: process.env.LOG_FILE || null

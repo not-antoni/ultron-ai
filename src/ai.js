@@ -5,6 +5,14 @@ const config = require('../config');
 const { getSystemPrompt } = require('./persona');
 const { toolDeclarations } = require('./tools');
 const { executeTool, getUserTier, TOOL_TIERS } = require('./tool-executor');
+const {
+    normalizeThinkingMode,
+    detectThinkingComplexity,
+    shouldUseThinkingMode,
+    validateExecutionPlan,
+    executePlannedSteps,
+    makeExecutionSummary
+} = require('./ai-planner');
 const store = require('./store');
 const { createLogger } = require('./logger');
 const log = createLogger('Ultron');
@@ -24,6 +32,25 @@ function withTimeout(promise, ms = API_TIMEOUT_MS) {
 
 const MAX_CONCURRENT_REQUESTS = Math.max(1, Number(config.aiMaxConcurrentRequests) || 4);
 const TOOL_REPEAT_GUARD = Math.max(1, Number(config.aiToolRepeatGuard) || 2);
+const THINKING_MODE = normalizeThinkingMode(config.aiThinkingMode || 'auto');
+const THINKING_COMPLEXITY_MIN_STEPS = Math.max(1, Number(config.aiThinkingComplexityMinSteps) || 2);
+const THINKING_MAX_PLAN_STEPS = Math.max(1, Number(config.aiThinkingMaxPlanSteps) || 6);
+const THINKING_PREFLIGHT = config.aiThinkingPreflight !== false;
+const THINKING_STOP_ON_FAILURE = config.aiThinkingStopOnFailure !== false;
+
+const MEMBER_TARGET_TOOLS = new Set([
+    'assignRole',
+    'removeRole',
+    'timeoutMember',
+    'untimeoutMember',
+    'kickMember',
+    'banMember',
+    'setNickname',
+    'moveToVoice',
+    'disconnectFromVoice',
+    'voiceMute',
+    'voiceDeafen'
+]);
 
 let activeModelRequests = 0;
 const modelQueue = [];
@@ -349,6 +376,102 @@ function buildToolPrompt(selectedTools, toolChoice, nonce) {
     return lines.join('\n');
 }
 
+function buildPlannerToolCatalog(selectedTools) {
+    const lines = [];
+    for (const tool of selectedTools) {
+        const props = tool.parameters?.properties || {};
+        const required = new Set(tool.parameters?.required || []);
+        const args = Object.entries(props).map(([key, val]) => {
+            const type = val.type || 'string';
+            const req = required.has(key) ? '' : '?';
+            return `${key}${req}:${type}`;
+        }).join(', ');
+        lines.push(`- ${tool.name}${args ? `(${args})` : ''}`);
+    }
+    return lines.join('\n');
+}
+
+function buildPlannerPrompt(selectedTools, userInput) {
+    const lines = [];
+    lines.push('[PLANNER]');
+    lines.push('Create a JSON execution plan for the user request using the listed tools only.');
+    lines.push('Return ONLY one JSON object. No markdown. No prose.');
+    lines.push(`Max steps: ${THINKING_MAX_PLAN_STEPS}.`);
+    lines.push('Schema:');
+    lines.push('{"goal":"string","steps":[{"id":"step_1","tool":"toolName","args":{},"dependsOn":["step_x"],"onFailure":"stop","precheck":{"tool":"toolName","args":{}}}]}');
+    lines.push('Rules:');
+    lines.push('- Use sequential dependency-safe steps.');
+    lines.push('- If a step needs output from a previous step, use "$step.<stepId>.<field>" in args.');
+    lines.push('- Prefer exact references from prior steps over guesses.');
+    lines.push(`- Use onFailure "${THINKING_STOP_ON_FAILURE ? 'stop' : 'continue'}" unless truly safe to continue.`);
+    lines.push('- Include precheck only when needed for safety/validation.');
+    lines.push('Available tools:');
+    lines.push(buildPlannerToolCatalog(selectedTools) || '- none');
+    lines.push(`User request: ${userInput}`);
+    lines.push('[/PLANNER]');
+    return lines.join('\n');
+}
+
+function parseExecutionPlanText(text) {
+    if (!text || typeof text !== 'string') {
+        return { ok: false, error: 'Planner returned empty output.' };
+    }
+    const trimmed = text.trim();
+    const rawFence = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/i);
+    const candidates = [trimmed];
+    if (rawFence && rawFence[1]) candidates.push(rawFence[1].trim());
+    const extracted = extractJSON(trimmed, 0);
+    if (extracted) candidates.push(extracted);
+
+    for (const candidate of candidates) {
+        try {
+            const parsed = JSON.parse(candidate);
+            if (parsed && typeof parsed === 'object') {
+                return { ok: true, plan: parsed };
+            }
+        } catch (_) {}
+    }
+    return { ok: false, error: 'Planner output did not contain valid JSON.' };
+}
+
+function createAutoPreflightBuilder(allowedTools) {
+    if (!allowedTools.has('getMemberInfo')) return null;
+    return (step, resolvedArgs) => {
+        if (!MEMBER_TARGET_TOOLS.has(step.tool)) return [];
+        const user = typeof resolvedArgs?.user === 'string' ? resolvedArgs.user.trim() : '';
+        if (!user) return [];
+        return [{ tool: 'getMemberInfo', args: { user } }];
+    };
+}
+
+async function executeValidatedPlan(rawPlan, selectedTools, message, providerLog) {
+    const allowedTools = new Set(selectedTools.map(t => t.name));
+    const validated = validateExecutionPlan(rawPlan, {
+        allowedTools,
+        maxSteps: THINKING_MAX_PLAN_STEPS
+    });
+    if (!validated.ok) {
+        providerLog.warn(`Planner validation failed: ${validated.error}`);
+        return null;
+    }
+
+    const autoPreflightBuilder = THINKING_PREFLIGHT
+        ? createAutoPreflightBuilder(allowedTools)
+        : null;
+
+    const report = await executePlannedSteps(validated.plan, {
+        executeToolCall: async (toolName, args) => executeTool(toolName, args, message),
+        stopOnFailure: THINKING_STOP_ON_FAILURE,
+        preflightEnabled: THINKING_PREFLIGHT,
+        repeatGuard: TOOL_REPEAT_GUARD,
+        autoPreflightBuilder
+    });
+
+    const text = makeExecutionSummary(report);
+    providerLog.info(`Thinking mode executed steps=${validated.plan.steps.length} completed=${report.completed.length} failed=${report.failed.length} skipped=${report.skipped.length}`);
+    return { text, toolLog: report.toolLog, plan: validated.plan, report };
+}
+
 async function attachImagesToLastMessage(contents, images) {
     if (!images || images.length === 0) return;
     const lastMsg = contents[contents.length - 1];
@@ -548,18 +671,23 @@ async function openaiRequest(messages, tools, toolChoice) {
     }
 }
 
-// ── OpenAI Provider (native tool calling) ──
+async function buildExecutionPlanWithOpenAI(messages, selectedTools, userInput) {
+    const plannerPrompt = buildPlannerPrompt(selectedTools, userInput);
+    const plannerMessages = [
+        ...messages,
+        { role: 'user', content: plannerPrompt }
+    ];
+    const completion = await openaiRequest(plannerMessages, null, null);
+    const plannerText = completion?.choices?.[0]?.message?.content || '';
+    const parsed = parseExecutionPlanText(plannerText);
+    if (!parsed.ok) {
+        openaiLog.warn(`OpenAI planner parse failed: ${parsed.error}`);
+        return null;
+    }
+    return parsed.plan;
+}
 
-async function generateWithOpenAI(systemPrompt, contents, message, images = [], userTier = 3, userInput = '') {
-    if (!openai) throw new Error('OpenAI not configured');
-
-    const selectedTools = selectToolsForMessage(userInput, userTier);
-    const openaiTools = convertToolsForOpenAI(selectedTools);
-    const rawToolChoice = detectToolChoice(userInput);
-    const toolChoice = openaiTools.length > 0 ? rawToolChoice : 'none';
-
-    const messages = buildOpenAIMessages(systemPrompt, contents, images);
-
+async function runOpenAILegacyToolLoop(messages, openaiTools, toolChoice, message) {
     const toolLog = [];
     const repeatedToolCalls = new Map();
     let rounds = 0;
@@ -617,7 +745,7 @@ async function generateWithOpenAI(systemPrompt, contents, message, images = [], 
                 content: JSON.stringify(toolResult)
             });
         }
-        rounds++;
+        rounds += 1;
     }
 
     const final = await openaiRequest(messages, null, null);
@@ -625,17 +753,43 @@ async function generateWithOpenAI(systemPrompt, contents, message, images = [], 
     return { text: finalText, toolLog };
 }
 
-// ── Gemma Provider (text-only tools) ──
+// ── OpenAI Provider (native tool calling) ──
 
-async function generateWithGemma(systemPrompt, contents, message, images = [], userTier = 3, userInput = '') {
-    if (!genAI) throw new Error('Gemma not configured');
+async function generateWithOpenAI(systemPrompt, contents, message, images = [], userTier = 3, userInput = '') {
+    if (!openai) throw new Error('OpenAI not configured');
 
     const selectedTools = selectToolsForMessage(userInput, userTier);
+    const openaiTools = convertToolsForOpenAI(selectedTools);
     const rawToolChoice = detectToolChoice(userInput);
-    const toolChoice = selectedTools.length > 0 ? rawToolChoice : 'none';
-    const nonce = crypto.randomBytes(3).toString('hex');
-    const toolPrompt = buildToolPrompt(selectedTools, toolChoice, nonce);
+    const toolChoice = openaiTools.length > 0 ? rawToolChoice : 'none';
 
+    const messages = buildOpenAIMessages(systemPrompt, contents, images);
+    const complexity = detectThinkingComplexity(userInput, THINKING_COMPLEXITY_MIN_STEPS);
+    const useThinking = shouldUseThinkingMode({
+        mode: THINKING_MODE,
+        userInput,
+        toolChoice,
+        availableToolsCount: selectedTools.length,
+        minSteps: THINKING_COMPLEXITY_MIN_STEPS
+    });
+
+    if (useThinking) {
+        try {
+            openaiLog.info(`Thinking mode enabled (estimatedSteps=${complexity.estimatedSteps}, refs=${complexity.hasCrossStepReferences})`);
+            const rawPlan = await buildExecutionPlanWithOpenAI(messages, selectedTools, userInput);
+            if (rawPlan) {
+                const executed = await executeValidatedPlan(rawPlan, selectedTools, message, openaiLog);
+                if (executed?.text) return { text: executed.text, toolLog: executed.toolLog };
+            }
+        } catch (err) {
+            openaiLog.warn(`Thinking mode failed; falling back to legacy tool loop: ${err.message}`);
+        }
+    }
+
+    return runOpenAILegacyToolLoop(messages, openaiTools, toolChoice, message);
+}
+
+function createGemmaWorkingContents(systemPrompt, contents, selectedTools, toolChoice, nonce) {
     const working = contents.map(entry => ({ role: entry.role, parts: [...entry.parts] }));
     const useSystemInstruction = !/gemma/i.test(String(config.ai.model || ''));
     if (!useSystemInstruction) {
@@ -644,23 +798,49 @@ async function generateWithGemma(systemPrompt, contents, message, images = [], u
             { role: 'model', parts: [{ text: 'Understood.' }] }
         );
     }
-    if (toolPrompt) {
-        working.splice(working.length - 1, 0,
-            { role: 'user', parts: [{ text: toolPrompt }] },
-            { role: 'model', parts: [{ text: 'Acknowledged.' }] }
-        );
+    if (selectedTools && nonce) {
+        const toolPrompt = buildToolPrompt(selectedTools, toolChoice, nonce);
+        if (toolPrompt) {
+            working.splice(working.length - 1, 0,
+                { role: 'user', parts: [{ text: toolPrompt }] },
+                { role: 'model', parts: [{ text: 'Acknowledged.' }] }
+            );
+        }
     }
+    return { working, useSystemInstruction };
+}
 
-    if (images.length > 0) {
-        await attachImagesToLastMessage(working, images);
-    }
-
+function createGemmaModel(systemPrompt, useSystemInstruction) {
     const modelConfig = {
         model: config.ai.model,
         generationConfig: buildGenerationConfig()
     };
     if (useSystemInstruction) modelConfig.systemInstruction = systemPrompt;
-    const model = genAI.getGenerativeModel(modelConfig);
+    return genAI.getGenerativeModel(modelConfig);
+}
+
+async function buildExecutionPlanWithGemma(systemPrompt, contents, selectedTools, userInput) {
+    const { working, useSystemInstruction } = createGemmaWorkingContents(systemPrompt, contents, null, null, null);
+    const plannerPrompt = buildPlannerPrompt(selectedTools, userInput);
+    working.push({ role: 'user', parts: [{ text: plannerPrompt }] });
+    const model = createGemmaModel(systemPrompt, useSystemInstruction);
+    const result = await withModelSlot(() => withTimeout(model.generateContent({ contents: working })));
+    const plannerText = result?.response?.text?.() || '';
+    const parsed = parseExecutionPlanText(plannerText);
+    if (!parsed.ok) {
+        gemmaLog.warn(`Gemma planner parse failed: ${parsed.error}`);
+        return null;
+    }
+    return parsed.plan;
+}
+
+async function runGemmaLegacyToolLoop(systemPrompt, contents, selectedTools, toolChoice, nonce, message, images = []) {
+    const { working, useSystemInstruction } = createGemmaWorkingContents(systemPrompt, contents, selectedTools, toolChoice, nonce);
+    if (images.length > 0) {
+        await attachImagesToLastMessage(working, images);
+    }
+
+    const model = createGemmaModel(systemPrompt, useSystemInstruction);
 
     const toolLog = [];
     const repeatedToolCalls = new Map();
@@ -681,7 +861,7 @@ async function generateWithGemma(systemPrompt, contents, message, images = [], u
                     role: 'user',
                     parts: [{ text: `[SYSTEM] A tool call is required. Output ONLY tool call lines using the exact format: function=toolName>{JSON} #nonce:${nonce}. No other text.` }]
                 });
-                rounds++;
+                rounds += 1;
                 continue;
             }
             return { text: content, toolLog };
@@ -724,10 +904,44 @@ async function generateWithGemma(systemPrompt, contents, message, images = [], u
             role: 'user',
             parts: [{ text: `[SYSTEM] The tools were executed. Results:\n${resultSummary}\n\nIf further actions are required, output another tool call line. Otherwise reply to the user in 1-2 sentences with no tool calls.` }]
         });
-        rounds++;
+        rounds += 1;
     }
 
     return { text: null, toolLog };
+}
+
+// ── Gemma Provider (text-only tools) ──
+
+async function generateWithGemma(systemPrompt, contents, message, images = [], userTier = 3, userInput = '') {
+    if (!genAI) throw new Error('Gemma not configured');
+
+    const selectedTools = selectToolsForMessage(userInput, userTier);
+    const rawToolChoice = detectToolChoice(userInput);
+    const toolChoice = selectedTools.length > 0 ? rawToolChoice : 'none';
+    const complexity = detectThinkingComplexity(userInput, THINKING_COMPLEXITY_MIN_STEPS);
+    const useThinking = shouldUseThinkingMode({
+        mode: THINKING_MODE,
+        userInput,
+        toolChoice,
+        availableToolsCount: selectedTools.length,
+        minSteps: THINKING_COMPLEXITY_MIN_STEPS
+    });
+
+    if (useThinking) {
+        try {
+            gemmaLog.info(`Thinking mode enabled (estimatedSteps=${complexity.estimatedSteps}, refs=${complexity.hasCrossStepReferences})`);
+            const rawPlan = await buildExecutionPlanWithGemma(systemPrompt, contents, selectedTools, userInput);
+            if (rawPlan) {
+                const executed = await executeValidatedPlan(rawPlan, selectedTools, message, gemmaLog);
+                if (executed?.text) return { text: executed.text, toolLog: executed.toolLog };
+            }
+        } catch (err) {
+            gemmaLog.warn(`Thinking mode failed; falling back to legacy tool loop: ${err.message}`);
+        }
+    }
+
+    const nonce = crypto.randomBytes(3).toString('hex');
+    return runGemmaLegacyToolLoop(systemPrompt, contents, selectedTools, toolChoice, nonce, message, images);
 }
 
 // ── Main Entry ──
